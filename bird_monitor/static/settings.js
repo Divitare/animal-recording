@@ -341,12 +341,14 @@ function settingsRenderSpeciesStatus() {
     const locationText = settingsElements.locationName.value.trim()
       ? ` for ${settingsElements.locationName.value.trim()}`
       : "";
-    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. Each saved recording is analyzed after capture using the configured coordinates and the recording date.`;
+    const runtimeNote = status.species_error ? ` Last analysis problem: ${status.species_error}` : "";
+    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. Each saved recording is analyzed after capture using the configured coordinates and the recording date.${runtimeNote}`;
     return;
   }
 
   if (provider === "birdnet" && status.species_available === false) {
-    settingsElements.speciesStatusNote.textContent = "BirdNET is selected, but the server does not currently have its runtime dependencies available. Recording still works, but species labels will stay unavailable until BirdNET is installed and the service is restarted.";
+    const reason = status.species_error ? ` ${status.species_error}` : "";
+    settingsElements.speciesStatusNote.textContent = `BirdNET is selected, but the server does not currently have its runtime dependencies available.${reason} Recording still works, but species labels will stay unavailable until BirdNET is installed and the service is restarted.`;
     return;
   }
 

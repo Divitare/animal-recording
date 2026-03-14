@@ -240,7 +240,7 @@ BIRD_MONITOR_DEVICE_NAME=
 BIRD_MONITOR_DEVICE_INDEX=
 BIRD_MONITOR_SAMPLE_RATE=32000
 BIRD_MONITOR_CHANNELS=1
-BIRD_MONITOR_SEGMENT_SECONDS=60
+BIRD_MONITOR_SEGMENT_SECONDS=30
 BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=0.2
 BIRD_MONITOR_DISABLE_RECORDER=false
 BIRD_MONITOR_LOCATION_NAME=
@@ -256,7 +256,7 @@ EOF
   grep -q '^BIRD_MONITOR_PORT=' "${ENV_FILE}" || echo "BIRD_MONITOR_PORT=8080" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_SAMPLE_RATE=' "${ENV_FILE}" || echo "BIRD_MONITOR_SAMPLE_RATE=32000" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_CHANNELS=' "${ENV_FILE}" || echo "BIRD_MONITOR_CHANNELS=1" >> "${ENV_FILE}"
-  grep -q '^BIRD_MONITOR_SEGMENT_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SEGMENT_SECONDS=60" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_SEGMENT_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SEGMENT_SECONDS=30" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=0.2" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_DISABLE_RECORDER=' "${ENV_FILE}" || echo "BIRD_MONITOR_DISABLE_RECORDER=false" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_LOCATION_NAME=' "${ENV_FILE}" || echo "BIRD_MONITOR_LOCATION_NAME=" >> "${ENV_FILE}"
@@ -320,6 +320,7 @@ create_virtualenv() {
   "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
   "${VENV_DIR}/bin/pip" install -r "${CURRENT_DIR}/requirements.txt"
   install_species_runtime
+  verify_species_runtime
 }
 
 install_species_runtime() {
@@ -349,6 +350,35 @@ install_species_runtime() {
   fi
 
   warn "BirdNET runtime packages could not be installed automatically. Recording will still work, but species labels will remain unavailable until TensorFlow Lite or TensorFlow is installed in ${VENV_DIR}."
+}
+
+verify_species_runtime() {
+  set_stage "Verifying BirdNET species runtime"
+  local verify_output=""
+
+  if verify_output="$(
+    cd "${CURRENT_DIR}" && "${VENV_DIR}/bin/python" - <<'PY'
+from bird_monitor.species import build_species_classifier
+
+classifier = build_species_classifier()
+print(f"provider={classifier.provider_name}")
+print(f"available={classifier.available()}")
+reason = getattr(classifier, "failure_reason", None)
+if reason:
+    print(f"reason={reason}")
+
+raise SystemExit(0 if classifier.available() else 1)
+PY
+  )"; then
+    log "BirdNET verification passed."
+    printf '%s\n' "${verify_output}"
+    return
+  fi
+
+  warn "BirdNET verification did not pass. Species labels will remain unavailable until the reported dependency issue is fixed."
+  if [[ -n "${verify_output}" ]]; then
+    printf '%s\n' "${verify_output}"
+  fi
 }
 
 initialize_database() {

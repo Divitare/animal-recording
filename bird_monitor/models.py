@@ -24,7 +24,7 @@ class RecorderSettings(db.Model):
     device_index = db.Column(db.Integer, nullable=True)
     sample_rate = db.Column(db.Integer, nullable=False, default=32000)
     channels = db.Column(db.Integer, nullable=False, default=1)
-    segment_seconds = db.Column(db.Integer, nullable=False, default=60)
+    segment_seconds = db.Column(db.Integer, nullable=False, default=30)
     min_event_duration_seconds = db.Column(db.Float, nullable=False, default=0.2)
     location_name = db.Column(db.String(255), nullable=True)
     latitude = db.Column(db.Float, nullable=True)
@@ -46,7 +46,7 @@ class RecorderSettings(db.Model):
                 device_index=int(device_index) if device_index else None,
                 sample_rate=int(os.getenv("BIRD_MONITOR_SAMPLE_RATE", "32000")),
                 channels=int(os.getenv("BIRD_MONITOR_CHANNELS", "1")),
-                segment_seconds=int(os.getenv("BIRD_MONITOR_SEGMENT_SECONDS", "60")),
+                segment_seconds=int(os.getenv("BIRD_MONITOR_SEGMENT_SECONDS", "30")),
                 min_event_duration_seconds=float(os.getenv("BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS", "0.2")),
                 location_name=os.getenv("BIRD_MONITOR_LOCATION_NAME", "").strip() or None,
                 latitude=float(latitude) if latitude else None,

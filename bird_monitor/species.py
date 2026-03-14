@@ -20,6 +20,9 @@ class SpeciesPrediction:
 class NullSpeciesClassifier:
     provider_name = "disabled"
 
+    def __init__(self, reason: str | None = None) -> None:
+        self.failure_reason = reason or "BirdNET runtime dependencies are unavailable."
+
     def available(self) -> bool:
         return False
 
@@ -89,8 +92,10 @@ class BirdNetSpeciesClassifier:
 def build_species_classifier():
     try:
         return BirdNetSpeciesClassifier()
-    except Exception:
-        return NullSpeciesClassifier()
+    except Exception as exc:
+        return NullSpeciesClassifier(_describe_runtime_issue(exc))
+
+
 def prediction_overlaps_event(event: BirdActivityEvent, prediction: SpeciesPrediction) -> bool:
     overlap_start = max(event.start_offset_seconds, prediction.start_offset_seconds)
     overlap_end = min(event.end_offset_seconds, prediction.end_offset_seconds)
@@ -135,3 +140,16 @@ def merge_species_predictions(
 def _clean_optional_text(value: object) -> str | None:
     text = str(value).strip() if value is not None else ""
     return text or None
+
+
+def _describe_runtime_issue(exc: Exception) -> str:
+    if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", None):
+        return (
+            f"Missing Python package '{exc.name}'. "
+            "Run install.sh again or install the BirdNET dependencies in the server virtual environment."
+        )
+
+    message = str(exc).strip()
+    if message:
+        return message
+    return exc.__class__.__name__

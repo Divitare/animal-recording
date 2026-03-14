@@ -435,9 +435,21 @@ button:hover {
   flex-wrap: wrap;
 }
 
+.timeline-toolbar-copy {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .timeline-scroll {
   overflow-x: auto;
   padding-bottom: 8px;
+  cursor: grab;
+  user-select: none;
+  touch-action: pan-x;
+}
+
+.timeline-scroll.is-dragging {
+  cursor: grabbing;
 }
 
 .timeline-canvas {

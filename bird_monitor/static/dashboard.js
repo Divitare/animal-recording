@@ -11,6 +11,10 @@ const dashboardState = {
   status: null,
   livePollHandle: null,
   zoomFactor: 1,
+  timelineDragPointerId: null,
+  timelineDragStartX: 0,
+  timelineDragStartScrollLeft: 0,
+  timelineDidDrag: false,
 };
 
 const dashboardElements = {
@@ -25,9 +29,6 @@ const dashboardElements = {
   timelineEmpty: document.querySelector("#timeline-empty"),
   timelineScroll: document.querySelector("#timeline-scroll"),
   timelineCanvas: document.querySelector("#timeline-canvas"),
-  zoomOutButton: document.querySelector("#zoom-out-button"),
-  zoomInButton: document.querySelector("#zoom-in-button"),
-  zoomFitButton: document.querySelector("#zoom-fit-button"),
   zoomLabel: document.querySelector("#zoom-label"),
   statsSummary: document.querySelector("#stats-summary"),
   statsGrid: document.querySelector("#stats-grid"),
@@ -146,20 +147,64 @@ function dashboardBindEvents() {
     }
   });
 
-  dashboardElements.zoomOutButton.addEventListener("click", () => {
-    dashboardState.zoomFactor = Math.max(MIN_ZOOM, dashboardState.zoomFactor / 1.35);
-    dashboardRenderTimeline();
+  dashboardElements.timelineScroll.addEventListener("wheel", (event) => {
+    if (!dashboardState.range) {
+      return;
+    }
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY) && !event.ctrlKey) {
+      return;
+    }
+    event.preventDefault();
+    const zoomStep = event.deltaY < 0 ? 1.15 : (1 / 1.15);
+    dashboardZoomTimeline(zoomStep, event.clientX);
+  }, { passive: false });
+
+  dashboardElements.timelineScroll.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    dashboardState.timelineDragPointerId = event.pointerId;
+    dashboardState.timelineDragStartX = event.clientX;
+    dashboardState.timelineDragStartScrollLeft = dashboardElements.timelineScroll.scrollLeft;
+    dashboardState.timelineDidDrag = false;
+    dashboardElements.timelineScroll.classList.add("is-dragging");
+    dashboardElements.timelineScroll.setPointerCapture(event.pointerId);
   });
 
-  dashboardElements.zoomInButton.addEventListener("click", () => {
-    dashboardState.zoomFactor = Math.min(MAX_ZOOM, dashboardState.zoomFactor * 1.35);
-    dashboardRenderTimeline();
+  dashboardElements.timelineScroll.addEventListener("pointermove", (event) => {
+    if (dashboardState.timelineDragPointerId !== event.pointerId) {
+      return;
+    }
+    const deltaX = event.clientX - dashboardState.timelineDragStartX;
+    if (Math.abs(deltaX) > 3) {
+      dashboardState.timelineDidDrag = true;
+    }
+    dashboardElements.timelineScroll.scrollLeft = dashboardState.timelineDragStartScrollLeft - deltaX;
   });
 
-  dashboardElements.zoomFitButton.addEventListener("click", () => {
-    dashboardFitTimeline();
-    dashboardRenderTimeline();
-  });
+  const releaseTimelineDrag = (event) => {
+    if (dashboardState.timelineDragPointerId !== event.pointerId) {
+      return;
+    }
+    dashboardElements.timelineScroll.classList.remove("is-dragging");
+    if (dashboardElements.timelineScroll.hasPointerCapture(event.pointerId)) {
+      dashboardElements.timelineScroll.releasePointerCapture(event.pointerId);
+    }
+    dashboardState.timelineDragPointerId = null;
+    window.setTimeout(() => {
+      dashboardState.timelineDidDrag = false;
+    }, 0);
+  };
+
+  dashboardElements.timelineScroll.addEventListener("pointerup", releaseTimelineDrag);
+  dashboardElements.timelineScroll.addEventListener("pointercancel", releaseTimelineDrag);
+  dashboardElements.timelineScroll.addEventListener("click", (event) => {
+    if (!dashboardState.timelineDidDrag) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
 }
 
 async function dashboardRefreshAll() {
@@ -193,6 +238,7 @@ function dashboardStartLivePolling() {
 }
 
 async function dashboardLoadRecordings(resetZoom) {
+  const previousScrollRatio = dashboardCurrentScrollRatio();
   const params = new URLSearchParams({
     start: new Date(dashboardElements.rangeStart.value).toISOString(),
     end: new Date(dashboardElements.rangeEnd.value).toISOString(),
@@ -207,6 +253,9 @@ async function dashboardLoadRecordings(resetZoom) {
     dashboardFitTimeline();
   }
   dashboardRenderTimeline();
+  if (!resetZoom) {
+    dashboardRestoreScrollRatio(previousScrollRatio);
+  }
   dashboardRenderStatistics();
 }
 
@@ -238,7 +287,7 @@ function dashboardRenderService(service) {
   dashboardElements.activityMode.textContent = dashboardBuildModeLabel(reason, manualMode, isRecording);
   dashboardElements.currentDevice.textContent = service.current_device_name || "Auto selection";
   dashboardElements.speciesState.textContent = dashboardBuildSpeciesState(service);
-  dashboardElements.serviceError.textContent = service.last_error || "";
+  dashboardElements.serviceError.textContent = dashboardBuildServiceProblems(service);
   dashboardElements.liveLevel.textContent = `Input ${Math.round((service.live_level || 0) * 100)}%`;
   dashboardElements.manualStartButton.disabled = manualMode;
   dashboardElements.manualStopButton.disabled = !manualMode;
@@ -254,6 +303,17 @@ function dashboardBuildSpeciesState(service) {
     return service.species_available === false ? "BirdNET unavailable" : "BirdNET selected";
   }
   return "Activity markers only";
+}
+
+function dashboardBuildServiceProblems(service) {
+  const messages = [];
+  if (service.last_error) {
+    messages.push(`Recorder: ${service.last_error}`);
+  }
+  if (service.species_error) {
+    messages.push(`BirdNET: ${service.species_error}`);
+  }
+  return messages.join(" ");
 }
 
 function dashboardBuildActivityDetail(service, activeSchedules) {
@@ -340,6 +400,45 @@ function dashboardFitTimeline() {
   const availableWidth = Math.max(dashboardElements.timelineScroll.clientWidth - 40, 400);
   const computedZoom = availableWidth / Math.max(durationHours * BASE_PIXELS_PER_HOUR, 1);
   dashboardState.zoomFactor = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, computedZoom));
+}
+
+function dashboardCurrentScrollRatio() {
+  const scrollElement = dashboardElements.timelineScroll;
+  const maxScroll = Math.max(scrollElement.scrollWidth - scrollElement.clientWidth, 0);
+  if (maxScroll <= 0) {
+    return 0;
+  }
+  return scrollElement.scrollLeft / maxScroll;
+}
+
+function dashboardZoomTimeline(multiplier, clientX) {
+  if (!dashboardState.range) {
+    return;
+  }
+
+  const scrollElement = dashboardElements.timelineScroll;
+  const previousWidth = dashboardTimelineWidth();
+  const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, dashboardState.zoomFactor * multiplier));
+  if (Math.abs(nextZoom - dashboardState.zoomFactor) < 0.001) {
+    return;
+  }
+
+  const rect = scrollElement.getBoundingClientRect();
+  const anchorWithinView = clientX != null ? clientX - rect.left : (scrollElement.clientWidth / 2);
+  const anchorRatio = (scrollElement.scrollLeft + anchorWithinView) / Math.max(previousWidth, 1);
+
+  dashboardState.zoomFactor = nextZoom;
+  dashboardRenderTimeline();
+
+  const nextWidth = dashboardTimelineWidth();
+  const nextScrollLeft = (anchorRatio * nextWidth) - anchorWithinView;
+  scrollElement.scrollLeft = Math.max(0, Math.min(nextScrollLeft, Math.max(nextWidth - scrollElement.clientWidth, 0)));
+}
+
+function dashboardRestoreScrollRatio(ratio) {
+  const scrollElement = dashboardElements.timelineScroll;
+  const maxScroll = Math.max(scrollElement.scrollWidth - scrollElement.clientWidth, 0);
+  scrollElement.scrollLeft = Math.max(0, Math.min(maxScroll * ratio, maxScroll));
 }
 
 function dashboardRenderTimeline() {
@@ -570,7 +669,7 @@ function dashboardBuildDetectionInline(detection) {
 }
 
 function dashboardUpdateZoomLabel() {
-  dashboardElements.zoomLabel.textContent = `${Math.round(dashboardState.zoomFactor * 100)}%`;
+  dashboardElements.zoomLabel.textContent = `Zoom ${Math.round(dashboardState.zoomFactor * 100)}%`;
 }
 
 function dashboardRangeDurationHours() {

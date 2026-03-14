@@ -45,6 +45,7 @@ class RecordingManager:
             "species_provider": "disabled",
             "species_available": self._species_classifier.available(),
             "species_enabled": False,
+            "species_error": getattr(self._species_classifier, "failure_reason", None),
         }
 
     def start(self) -> None:
@@ -139,21 +140,25 @@ class RecordingManager:
             return True
         return mode == "manual" and self._manual_stop_is_requested()
 
-    def _species_state(self, settings: RecorderSettings) -> tuple[str, bool, bool]:
+    def _species_state(self, settings: RecorderSettings) -> tuple[str, bool, bool, str | None]:
         requested_provider = (settings.species_provider or "disabled").strip().casefold()
         species_available = self._species_classifier.available()
         species_enabled = requested_provider == "birdnet" and species_available
-        return requested_provider, species_available, species_enabled
+        species_error = None
+        if requested_provider == "birdnet" and not species_available:
+            species_error = getattr(self._species_classifier, "failure_reason", None) or "BirdNET is unavailable."
+        return requested_provider, species_available, species_enabled, species_error
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
             with self.app.app_context():
                 settings = RecorderSettings.get_or_create()
-                species_provider, species_available, species_enabled = self._species_state(settings)
+                species_provider, species_available, species_enabled, species_error = self._species_state(settings)
                 self._set_status(
                     species_provider=species_provider,
                     species_available=species_available,
                     species_enabled=species_enabled,
+                    species_error=species_error,
                 )
                 local_now = datetime.now().astimezone()
                 schedules = RecordingSchedule.query.filter_by(enabled=True).all()
@@ -254,8 +259,10 @@ class RecordingManager:
                                 recorded_at=started_at,
                                 min_confidence=settings.species_min_confidence,
                             )
+                            self._set_status(species_error=None)
                         except Exception as exc:
                             self.app.logger.warning("Species detection failed for %s: %s", file_path, exc)
+                            self._set_status(species_error=f"BirdNET analysis failed: {exc}")
 
                     timeline_detections: list[BirdDetection] = []
                     for prediction in species_predictions:
