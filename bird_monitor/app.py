@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, render_template
+from flask import Flask, render_template, url_for
 
 from .api import api_bp
 from .database import ensure_schema
@@ -47,6 +47,15 @@ def create_app() -> Flask:
 
     db.init_app(app)
     app.register_blueprint(api_bp, url_prefix="/api")
+
+    @app.context_processor
+    def asset_helpers():
+        def asset_url(filename: str) -> str:
+            asset_path = Path(app.static_folder or "") / filename
+            version = int(asset_path.stat().st_mtime) if asset_path.exists() else 0
+            return url_for("static", filename=filename, v=version)
+
+        return {"asset_url": asset_url}
 
     @app.get("/")
     def index():

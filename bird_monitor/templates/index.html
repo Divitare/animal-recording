@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Bird Monitor</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="stylesheet" href="{{ asset_url('styles.css') }}">
   </head>
   <body>
     <div class="page-shell">
@@ -106,6 +106,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+    <script src="{{ asset_url('dashboard.js') }}" defer></script>
   </body>
 </html>
