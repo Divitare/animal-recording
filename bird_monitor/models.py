@@ -26,6 +26,11 @@ class RecorderSettings(db.Model):
     channels = db.Column(db.Integer, nullable=False, default=1)
     segment_seconds = db.Column(db.Integer, nullable=False, default=60)
     min_event_duration_seconds = db.Column(db.Float, nullable=False, default=0.2)
+    location_name = db.Column(db.String(255), nullable=True)
+    latitude = db.Column(db.Float, nullable=True)
+    longitude = db.Column(db.Float, nullable=True)
+    species_provider = db.Column(db.String(32), nullable=False, default="disabled")
+    species_min_confidence = db.Column(db.Float, nullable=False, default=0.35)
     updated_at = db.Column(db.DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
     @classmethod
@@ -33,6 +38,8 @@ class RecorderSettings(db.Model):
         settings = cls.query.get(1)
         if settings is None:
             device_index = os.getenv("BIRD_MONITOR_DEVICE_INDEX", "").strip()
+            latitude = os.getenv("BIRD_MONITOR_LATITUDE", "").strip()
+            longitude = os.getenv("BIRD_MONITOR_LONGITUDE", "").strip()
             settings = cls(
                 id=1,
                 device_name=os.getenv("BIRD_MONITOR_DEVICE_NAME", "").strip() or None,
@@ -41,6 +48,11 @@ class RecorderSettings(db.Model):
                 channels=int(os.getenv("BIRD_MONITOR_CHANNELS", "1")),
                 segment_seconds=int(os.getenv("BIRD_MONITOR_SEGMENT_SECONDS", "60")),
                 min_event_duration_seconds=float(os.getenv("BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS", "0.2")),
+                location_name=os.getenv("BIRD_MONITOR_LOCATION_NAME", "").strip() or None,
+                latitude=float(latitude) if latitude else None,
+                longitude=float(longitude) if longitude else None,
+                species_provider=os.getenv("BIRD_MONITOR_SPECIES_PROVIDER", "birdnet").strip().casefold() or "disabled",
+                species_min_confidence=float(os.getenv("BIRD_MONITOR_SPECIES_MIN_CONFIDENCE", "0.35")),
             )
             db.session.add(settings)
             db.session.commit()
@@ -55,6 +67,11 @@ class RecorderSettings(db.Model):
             "channels": self.channels,
             "segment_seconds": self.segment_seconds,
             "min_event_duration_seconds": self.min_event_duration_seconds,
+            "location_name": self.location_name,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "species_provider": self.species_provider,
+            "species_min_confidence": self.species_min_confidence,
             "updated_at": utc_iso(self.updated_at),
         }
 
@@ -146,7 +163,9 @@ class BirdDetection(db.Model):
     ended_at = db.Column(db.DateTime, nullable=False)
     confidence = db.Column(db.Float, nullable=False)
     dominant_frequency_hz = db.Column(db.Float, nullable=False)
+    source = db.Column(db.String(32), nullable=False, default="activity")
     species_common_name = db.Column(db.String(255), nullable=True)
+    species_scientific_name = db.Column(db.String(255), nullable=True)
     species_score = db.Column(db.Float, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
 
@@ -158,7 +177,9 @@ class BirdDetection(db.Model):
             "ended_at": utc_iso(self.ended_at),
             "confidence": self.confidence,
             "dominant_frequency_hz": self.dominant_frequency_hz,
+            "source": self.source,
             "species_common_name": self.species_common_name,
+            "species_scientific_name": self.species_scientific_name,
             "species_score": self.species_score,
             "created_at": utc_iso(self.created_at),
         }

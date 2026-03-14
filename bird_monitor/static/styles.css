@@ -387,6 +387,10 @@ button:hover {
   margin-top: 18px;
 }
 
+#species-status-note {
+  margin-top: 12px;
+}
+
 .schedule-item {
   padding: 14px;
   border-radius: 18px;
@@ -494,6 +498,37 @@ button:hover {
   border-radius: 999px;
   background: var(--bird);
   box-shadow: 0 0 0 4px rgba(240, 122, 40, 0.16);
+}
+
+.bird-marker.is-species {
+  background: #1f6b45;
+  box-shadow: 0 0 0 4px rgba(31, 107, 69, 0.18);
+}
+
+.day-detection-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.detection-chip,
+.day-detection-empty {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(76, 58, 39, 0.1);
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.detection-chip.has-species {
+  background: rgba(31, 107, 69, 0.12);
+  border-color: rgba(31, 107, 69, 0.18);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .empty-state {

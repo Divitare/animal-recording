@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from flask import Flask, render_template
 
 from .api import api_bp
+from .database import ensure_schema
 from .extensions import db
 from .models import RecorderSettings
 from .services import start_background_services
@@ -57,6 +58,7 @@ def create_app() -> Flask:
 
     with app.app_context():
         db.create_all()
+        ensure_schema()
         RecorderSettings.get_or_create()
 
     start_background_services(app)

@@ -86,24 +86,56 @@ def update_settings():
     payload = request.get_json(silent=True) or {}
     settings = RecorderSettings.get_or_create()
 
-    if "device_name" in payload:
-        settings.device_name = (payload.get("device_name") or "").strip() or None
+    try:
+        if "device_name" in payload:
+            settings.device_name = (payload.get("device_name") or "").strip() or None
 
-    if "device_index" in payload:
-        device_index = payload.get("device_index")
-        settings.device_index = None if device_index in ("", None) else int(device_index)
+        if "device_index" in payload:
+            device_index = payload.get("device_index")
+            settings.device_index = None if device_index in ("", None) else int(device_index)
 
-    if "sample_rate" in payload:
-        settings.sample_rate = max(8000, int(payload["sample_rate"]))
+        if "sample_rate" in payload:
+            settings.sample_rate = max(8000, int(payload["sample_rate"]))
 
-    if "channels" in payload:
-        settings.channels = max(1, min(2, int(payload["channels"])))
+        if "channels" in payload:
+            settings.channels = max(1, min(2, int(payload["channels"])))
 
-    if "segment_seconds" in payload:
-        settings.segment_seconds = max(5, int(payload["segment_seconds"]))
+        if "segment_seconds" in payload:
+            settings.segment_seconds = max(5, int(payload["segment_seconds"]))
 
-    if "min_event_duration_seconds" in payload:
-        settings.min_event_duration_seconds = max(0.05, float(payload["min_event_duration_seconds"]))
+        if "min_event_duration_seconds" in payload:
+            settings.min_event_duration_seconds = max(0.05, float(payload["min_event_duration_seconds"]))
+
+        if "location_name" in payload:
+            settings.location_name = (payload.get("location_name") or "").strip() or None
+
+        if "latitude" in payload:
+            latitude = payload.get("latitude")
+            settings.latitude = None if latitude in ("", None) else float(latitude)
+
+        if "longitude" in payload:
+            longitude = payload.get("longitude")
+            settings.longitude = None if longitude in ("", None) else float(longitude)
+    except (TypeError, ValueError) as exc:
+        return _json_error(f"Invalid settings value: {exc}")
+
+    if settings.latitude is not None and not (-90.0 <= settings.latitude <= 90.0):
+        return _json_error("Latitude must be between -90 and 90.")
+
+    if settings.longitude is not None and not (-180.0 <= settings.longitude <= 180.0):
+        return _json_error("Longitude must be between -180 and 180.")
+
+    if (settings.latitude is None) != (settings.longitude is None):
+        return _json_error("Set both latitude and longitude, or leave both empty.")
+
+    if "species_provider" in payload:
+        provider = str(payload.get("species_provider") or "disabled").strip().casefold()
+        if provider not in {"disabled", "birdnet"}:
+            return _json_error("Unknown species analysis provider.")
+        settings.species_provider = provider
+
+    if "species_min_confidence" in payload:
+        settings.species_min_confidence = min(0.99, max(0.05, float(payload["species_min_confidence"])))
 
     try:
         resolved_index, _ = resolve_input_device(settings.device_name, settings.device_index)

@@ -4,6 +4,7 @@ const settingsState = {
   devices: [],
   schedules: [],
   settings: null,
+  status: null,
   selectedDays: new Set([0, 1, 2, 3, 4, 5, 6]),
 };
 
@@ -15,7 +16,13 @@ const settingsElements = {
   channels: document.querySelector("#channels"),
   segmentSeconds: document.querySelector("#segment-seconds"),
   minEventDuration: document.querySelector("#min-event-duration"),
+  speciesProvider: document.querySelector("#species-provider"),
+  speciesMinConfidence: document.querySelector("#species-min-confidence"),
+  locationName: document.querySelector("#location-name"),
+  latitude: document.querySelector("#latitude"),
+  longitude: document.querySelector("#longitude"),
   devicesNote: document.querySelector("#devices-note"),
+  speciesStatusNote: document.querySelector("#species-status-note"),
   scheduleForm: document.querySelector("#schedule-form"),
   scheduleName: document.querySelector("#schedule-name"),
   scheduleStart: document.querySelector("#schedule-start"),
@@ -67,6 +74,12 @@ function settingsBindEvents() {
   settingsElements.deviceIndex.addEventListener("change", () => {
     settingsRenderCompatibilityOptions();
   });
+  settingsElements.speciesProvider.addEventListener("change", () => {
+    settingsRenderSpeciesStatus();
+  });
+  settingsElements.locationName.addEventListener("input", () => {
+    settingsRenderSpeciesStatus();
+  });
 
   settingsElements.settingsForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -82,6 +95,11 @@ function settingsBindEvents() {
           channels: Number(settingsElements.channels.value),
           segment_seconds: Number(settingsElements.segmentSeconds.value),
           min_event_duration_seconds: Number(settingsElements.minEventDuration.value),
+          species_provider: settingsElements.speciesProvider.value,
+          species_min_confidence: Number(settingsElements.speciesMinConfidence.value),
+          location_name: settingsElements.locationName.value.trim(),
+          latitude: settingsElements.latitude.value === "" ? null : Number(settingsElements.latitude.value),
+          longitude: settingsElements.longitude.value === "" ? null : Number(settingsElements.longitude.value),
         }),
       });
       await settingsRefreshAll();
@@ -116,6 +134,7 @@ function settingsBindEvents() {
 async function settingsRefreshAll() {
   await settingsLoadDevices();
   await settingsLoadSettings();
+  await settingsLoadStatus();
   await settingsLoadSchedules();
 }
 
@@ -135,6 +154,12 @@ async function settingsLoadSchedules() {
   const payload = await settingsFetchJson("/api/schedules");
   settingsState.schedules = payload.items;
   settingsRenderSchedules();
+}
+
+async function settingsLoadStatus() {
+  const payload = await settingsFetchJson("/api/status");
+  settingsState.status = payload.service || null;
+  settingsRenderSpeciesStatus();
 }
 
 function settingsRenderDevices(errorText) {
@@ -167,7 +192,13 @@ function settingsRenderSettings() {
   settingsElements.deviceName.value = settingsState.settings.device_name || "";
   settingsElements.segmentSeconds.value = `${settingsState.settings.segment_seconds}`;
   settingsElements.minEventDuration.value = `${settingsState.settings.min_event_duration_seconds}`;
+  settingsElements.speciesProvider.value = settingsState.settings.species_provider || "disabled";
+  settingsElements.speciesMinConfidence.value = `${settingsState.settings.species_min_confidence ?? 0.35}`;
+  settingsElements.locationName.value = settingsState.settings.location_name || "";
+  settingsElements.latitude.value = settingsState.settings.latitude ?? "";
+  settingsElements.longitude.value = settingsState.settings.longitude ?? "";
   settingsRenderCompatibilityOptions();
+  settingsRenderSpeciesStatus();
 }
 
 function settingsRenderCompatibilityOptions() {
@@ -193,6 +224,31 @@ function settingsPopulateSelect(selectElement, values, preferredValue) {
   if (chosenValue != null) {
     selectElement.value = `${chosenValue}`;
   }
+}
+
+function settingsRenderSpeciesStatus() {
+  const provider = settingsElements.speciesProvider.value || settingsState.settings?.species_provider || "disabled";
+  const status = settingsState.status || {};
+
+  if (provider === "birdnet" && status.species_enabled) {
+    const locationText = settingsElements.locationName.value.trim()
+      ? ` for ${settingsElements.locationName.value.trim()}`
+      : "";
+    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. Each saved recording is analyzed after capture using the configured coordinates, when available, and the recording date.`;
+    return;
+  }
+
+  if (provider === "birdnet" && status.species_available === false) {
+    settingsElements.speciesStatusNote.textContent = "BirdNET is selected, but the server does not currently have its runtime dependencies available. Recording still works, but species labels will stay unavailable until BirdNET is installed and the service is restarted.";
+    return;
+  }
+
+  if (provider === "birdnet") {
+    settingsElements.speciesStatusNote.textContent = "BirdNET is selected. Saved recordings will be analyzed after capture using the configured coordinates, when available, and the recording date.";
+    return;
+  }
+
+  settingsElements.speciesStatusNote.textContent = "Species analysis is disabled. The timeline will only show generic bird-activity markers.";
 }
 
 function settingsRenderSchedules() {

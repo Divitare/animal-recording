@@ -14,7 +14,7 @@ from .detection import detect_bird_activity
 from .extensions import db
 from .models import BirdDetection, RecorderSettings, Recording, RecordingSchedule, utc_iso
 from .scheduler import get_active_windows
-from .species import build_species_classifier, match_species_prediction
+from .species import build_species_classifier, prediction_overlaps_event
 
 
 class RecordingManager:
@@ -42,8 +42,9 @@ class RecordingManager:
             "activity_reason": "idle",
             "activity_message": "Waiting for the first schedule or a manual start.",
             "live_level": 0.0,
-            "species_provider": getattr(self._species_classifier, "provider_name", "disabled"),
-            "species_enabled": self._species_classifier.available(),
+            "species_provider": "disabled",
+            "species_available": self._species_classifier.available(),
+            "species_enabled": False,
         }
 
     def start(self) -> None:
@@ -138,10 +139,22 @@ class RecordingManager:
             return True
         return mode == "manual" and self._manual_stop_is_requested()
 
+    def _species_state(self, settings: RecorderSettings) -> tuple[str, bool, bool]:
+        requested_provider = (settings.species_provider or "disabled").strip().casefold()
+        species_available = self._species_classifier.available()
+        species_enabled = requested_provider == "birdnet" and species_available
+        return requested_provider, species_available, species_enabled
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
             with self.app.app_context():
                 settings = RecorderSettings.get_or_create()
+                species_provider, species_available, species_enabled = self._species_state(settings)
+                self._set_status(
+                    species_provider=species_provider,
+                    species_available=species_available,
+                    species_enabled=species_enabled,
+                )
                 local_now = datetime.now().astimezone()
                 schedules = RecordingSchedule.query.filter_by(enabled=True).all()
                 active_windows = get_active_windows(schedules, local_now)
@@ -232,11 +245,50 @@ class RecordingManager:
                         min_event_duration_seconds=settings.min_event_duration_seconds,
                     )
                     species_predictions = []
-                    if self._species_classifier.available():
+                    if species_enabled:
                         try:
-                            species_predictions = self._species_classifier.classify(file_path)
+                            species_predictions = self._species_classifier.classify(
+                                file_path,
+                                latitude=settings.latitude,
+                                longitude=settings.longitude,
+                                recorded_at=started_at,
+                                min_confidence=settings.species_min_confidence,
+                            )
                         except Exception as exc:
                             self.app.logger.warning("Species detection failed for %s: %s", file_path, exc)
+
+                    timeline_detections: list[BirdDetection] = []
+                    for prediction in species_predictions:
+                        timeline_detections.append(
+                            BirdDetection(
+                                recording_id=0,
+                                started_at=started_at + timedelta(seconds=prediction.start_offset_seconds),
+                                ended_at=started_at + timedelta(seconds=prediction.end_offset_seconds),
+                                confidence=prediction.confidence,
+                                dominant_frequency_hz=0.0,
+                                source="birdnet",
+                                species_common_name=prediction.common_name,
+                                species_scientific_name=prediction.scientific_name,
+                                species_score=prediction.confidence,
+                            )
+                        )
+
+                    for event in events:
+                        if any(prediction_overlaps_event(event, prediction) for prediction in species_predictions):
+                            continue
+                        timeline_detections.append(
+                            BirdDetection(
+                                recording_id=0,
+                                started_at=started_at + timedelta(seconds=event.start_offset_seconds),
+                                ended_at=started_at + timedelta(seconds=event.end_offset_seconds),
+                                confidence=event.confidence,
+                                dominant_frequency_hz=event.dominant_frequency_hz,
+                                source="activity",
+                                species_common_name=None,
+                                species_scientific_name=None,
+                                species_score=None,
+                            )
+                        )
 
                     recording = Recording(
                         file_path=str(file_path),
@@ -248,25 +300,15 @@ class RecordingManager:
                         size_bytes=file_path.stat().st_size,
                         peak_amplitude=peak_amplitude(capture.samples),
                         device_name=capture.device_name,
-                        has_bird_activity=bool(events),
-                        bird_event_count=len(events),
+                        has_bird_activity=bool(events or species_predictions or timeline_detections),
+                        bird_event_count=len(timeline_detections),
                     )
                     db.session.add(recording)
                     db.session.flush()
 
-                    for event in events:
-                        species = match_species_prediction(event, species_predictions)
-                        db.session.add(
-                            BirdDetection(
-                                recording_id=recording.id,
-                                started_at=started_at + timedelta(seconds=event.start_offset_seconds),
-                                ended_at=started_at + timedelta(seconds=event.end_offset_seconds),
-                                confidence=event.confidence,
-                                dominant_frequency_hz=event.dominant_frequency_hz,
-                                species_common_name=species.common_name if species else None,
-                                species_score=species.confidence if species else None,
-                            )
-                        )
+                    for detection in timeline_detections:
+                        detection.recording_id = recording.id
+                        db.session.add(detection)
 
                     db.session.commit()
                     self._clear_manual_stop()

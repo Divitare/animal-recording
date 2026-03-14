@@ -197,13 +197,23 @@ function dashboardRenderService(service) {
   dashboardElements.activityDetail.textContent = dashboardBuildActivityDetail(service, activeSchedules);
   dashboardElements.activityMode.textContent = dashboardBuildModeLabel(reason, manualMode, isRecording);
   dashboardElements.currentDevice.textContent = service.current_device_name || "Auto selection";
-  dashboardElements.speciesState.textContent = service.species_enabled ? `Enabled (${service.species_provider})` : "Activity markers only";
+  dashboardElements.speciesState.textContent = dashboardBuildSpeciesState(service);
   dashboardElements.serviceError.textContent = service.last_error || "";
   dashboardElements.liveLevel.textContent = `Input ${Math.round((service.live_level || 0) * 100)}%`;
   dashboardElements.manualStartButton.disabled = manualMode;
   dashboardElements.manualStopButton.disabled = !manualMode;
 
   dashboardRenderWaveform(service.waveform_samples || []);
+}
+
+function dashboardBuildSpeciesState(service) {
+  if (service.species_enabled) {
+    return "BirdNET active";
+  }
+  if (service.species_provider === "birdnet") {
+    return service.species_available === false ? "BirdNET unavailable" : "BirdNET selected";
+  }
+  return "Activity markers only";
 }
 
 function dashboardBuildActivityDetail(service, activeSchedules) {
@@ -290,7 +300,11 @@ function dashboardRenderTimeline(range) {
   }
 
   dashboardElements.timelineEmpty.style.display = "none";
-  dashboardElements.timelineSummary.textContent = `${dashboardState.recordings.length} recording segment(s) between ${new Date(range.start).toLocaleString()} and ${new Date(range.end).toLocaleString()}.`;
+  const totalDetections = dashboardState.recordings.reduce(
+    (sum, recording) => sum + (recording.detections?.length || 0),
+    0,
+  );
+  dashboardElements.timelineSummary.textContent = `${dashboardState.recordings.length} recording segment(s) and ${totalDetections} bird detection(s) between ${new Date(range.start).toLocaleString()} and ${new Date(range.end).toLocaleString()}.`;
 
   const grouped = new Map();
   dashboardState.recordings.forEach((recording) => {
@@ -326,6 +340,7 @@ function dashboardRenderTimeline(range) {
       });
 
       row.append(lane);
+      row.append(dashboardBuildDayDetectionList(items));
       dashboardElements.timelineDays.append(row);
     });
 }
@@ -360,7 +375,7 @@ function dashboardBuildRecordingBlock(recording) {
 
   block.style.left = `${leftPercent}%`;
   block.style.width = `${widthPercent}%`;
-  block.title = `${localStart.toLocaleTimeString()} - ${localEnd.toLocaleTimeString()} | ${recording.bird_event_count} bird event(s)`;
+  block.title = dashboardBuildRecordingTitle(recording, localStart, localEnd);
 
   const label = document.createElement("span");
   label.className = "recording-block-label";
@@ -371,14 +386,67 @@ function dashboardBuildRecordingBlock(recording) {
     const detectionStart = new Date(detection.started_at);
     const offsetPercent = (((detectionStart - localStart) / 1000) / durationSeconds) * 100;
     const marker = document.createElement("span");
-    marker.className = "bird-marker";
+    marker.className = `bird-marker${detection.species_common_name ? " is-species" : ""}`;
     marker.style.left = `${Math.min(Math.max(offsetPercent, 0), 100)}%`;
-    const speciesText = detection.species_common_name ? ` | ${detection.species_common_name}` : "";
-    marker.title = `Bird activity ${detection.confidence.toFixed(2)} at ${detectionStart.toLocaleTimeString()}${speciesText}`;
+    marker.title = dashboardBuildDetectionTitle(detection);
     block.append(marker);
   });
 
   return block;
+}
+
+function dashboardBuildRecordingTitle(recording, localStart, localEnd) {
+  const detections = recording.detections || [];
+  const summary = detections.length
+    ? detections.map((detection) => `${new Date(detection.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ${dashboardDetectionLabel(detection)}`).join(", ")
+    : "No bird detections";
+  return `${localStart.toLocaleTimeString()} - ${localEnd.toLocaleTimeString()} | ${summary}`;
+}
+
+function dashboardBuildDayDetectionList(recordings) {
+  const container = document.createElement("div");
+  container.className = "day-detection-list";
+
+  const items = recordings
+    .flatMap((recording) => (recording.detections || []).map((detection) => ({
+      detection,
+      audioUrl: recording.audio_url,
+    })))
+    .sort((left, right) => new Date(left.detection.started_at) - new Date(right.detection.started_at));
+
+  if (!items.length) {
+    container.innerHTML = `<div class="day-detection-empty">No bird detections were found in these recordings.</div>`;
+    return container;
+  }
+
+  items.forEach(({ detection, audioUrl }) => {
+    const link = document.createElement("a");
+    link.className = `detection-chip${detection.species_common_name ? " has-species" : ""}`;
+    link.href = audioUrl;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = dashboardBuildDetectionTitle(detection);
+    link.textContent = `${new Date(detection.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ${dashboardDetectionLabel(detection)}`;
+    container.append(link);
+  });
+
+  return container;
+}
+
+function dashboardDetectionLabel(detection) {
+  if (detection.species_common_name) {
+    return detection.species_common_name;
+  }
+  return detection.source === "birdnet" ? "Bird detection" : "Bird activity";
+}
+
+function dashboardBuildDetectionTitle(detection) {
+  const start = new Date(detection.started_at).toLocaleTimeString();
+  const end = new Date(detection.ended_at).toLocaleTimeString();
+  const species = detection.species_common_name || "Unclassified bird activity";
+  const scientific = detection.species_scientific_name ? ` (${detection.species_scientific_name})` : "";
+  const score = detection.species_score != null ? ` | species ${detection.species_score.toFixed(2)}` : "";
+  return `${species}${scientific} | ${start} - ${end} | confidence ${detection.confidence.toFixed(2)}${score}`;
 }
 
 async function initDashboard() {

@@ -53,9 +53,37 @@
               Minimum bird marker length (seconds)
               <input type="number" id="min-event-duration" min="0.05" step="0.05">
             </label>
+            <label>
+              Species analysis
+              <select id="species-provider">
+                <option value="birdnet">BirdNET</option>
+                <option value="disabled">Disabled</option>
+              </select>
+            </label>
+            <label>
+              BirdNET minimum confidence
+              <input type="number" id="species-min-confidence" min="0.05" max="0.99" step="0.01">
+            </label>
+            <label>
+              Location name
+              <input type="text" id="location-name" placeholder="Optional site name">
+            </label>
+            <div class="time-row">
+              <label>
+                Latitude
+                <input type="number" id="latitude" min="-90" max="90" step="0.0001" placeholder="52.5200">
+              </label>
+              <label>
+                Longitude
+                <input type="number" id="longitude" min="-180" max="180" step="0.0001" placeholder="13.4050">
+              </label>
+            </div>
             <button type="submit">Save recorder settings</button>
           </form>
           <p class="panel-copy" id="devices-note"></p>
+          <p class="panel-copy" id="species-status-note">
+            BirdNET will use the selected location and each recording date to narrow down likely species.
+          </p>
         </section>
 
         <section class="panel schedule-panel settings-panel-wide">

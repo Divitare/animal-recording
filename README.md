@@ -9,13 +9,15 @@ Bird Monitor is a Flask-based USB microphone recorder for bird sound monitoring.
 - Shows the live microphone waveform and current recorder activity
 - Stores each recording segment as a WAV file and tracks metadata in SQLite
 - Detects likely bird activity inside each segment and marks those moments in the timeline
+- Can analyze each saved recording with BirdNET and show species detections with timestamps in the timeline
 - Shows past recordings in a continuous day-by-day web timeline
 - Lets you download every recording that overlaps a selected time span
-- Lets you configure the microphone and segment length from the browser
+- Lets you configure the microphone, BirdNET location, and segment length from the `/settings` page
 
 ## Species detection
 
-Exact species detection is possible, but not perfectly reliable. In practice it usually needs a dedicated bird-classification model such as BirdNET plus a good microphone, clean audio, and regional context. This project ships with bird activity detection by default and includes an optional hook for BirdNET-style species labeling if you install and enable an external classifier.
+Exact species detection is possible, but not perfectly reliable. In practice it usually needs a dedicated bird-classification model such as BirdNET plus a good microphone, clean audio, and regional context. This project can analyze each saved recording with BirdNET after capture and can use the configured latitude, longitude, and recording date to narrow down likely species for that region and season.
+The Linux installer attempts to install the BirdNET runtime automatically. For local development, install `birdnetlib`, `librosa`, and either `tflite-runtime` or `tensorflow` if you want species labels during testing.
 
 ## Local development
 
@@ -52,6 +54,7 @@ The installer will:
 - start the server with `systemd` when available, or with `nohup` otherwise
 
 If it finds an existing installation, it will offer to update it or completely uninstall it.
+Updates are downloaded from `https://github.com/Divitare/animal-recording.git`, so re-running `install.sh` pulls the latest server code instead of only reusing the current local copy.
 
 ## Notes
 

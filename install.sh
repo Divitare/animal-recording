@@ -18,6 +18,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="${1:-auto}"
 PACKAGE_MANAGER=""
 PYTHON_BIN=""
+SOURCE_DIR=""
+SOURCE_IS_TEMP="false"
 
 log() {
   printf '[%s] %s\n' "${APP_NAME}" "$*"
@@ -34,6 +36,7 @@ die() {
 
 cleanup_on_error() {
   local line_number="$1"
+  cleanup_source_checkout
   warn "Installation failed near line ${line_number}."
 }
 
@@ -85,26 +88,26 @@ install_system_packages() {
       apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y \
         python3 python3-venv python3-dev build-essential pkg-config \
-        portaudio19-dev libsndfile1 ffmpeg rsync zip unzip curl alsa-utils
+        portaudio19-dev libsndfile1 ffmpeg rsync zip unzip curl alsa-utils git
       ;;
     dnf)
       dnf install -y \
         python3 python3-pip python3-devel gcc gcc-c++ make pkgconf-pkg-config \
-        portaudio-devel libsndfile ffmpeg rsync zip unzip curl alsa-utils
+        portaudio-devel libsndfile ffmpeg rsync zip unzip curl alsa-utils git
       ;;
     yum)
       yum install -y \
         python3 python3-pip python3-devel gcc gcc-c++ make pkgconfig \
-        portaudio-devel libsndfile ffmpeg rsync zip unzip curl alsa-utils
+        portaudio-devel libsndfile ffmpeg rsync zip unzip curl alsa-utils git
       ;;
     pacman)
       pacman -Sy --noconfirm \
-        python python-pip base-devel pkgconf portaudio libsndfile ffmpeg rsync zip unzip curl alsa-utils
+        python python-pip base-devel pkgconf portaudio libsndfile ffmpeg rsync zip unzip curl alsa-utils git
       ;;
     zypper)
       zypper --non-interactive install \
         python3 python3-pip python3-devel gcc gcc-c++ make pkg-config \
-        portaudio-devel libsndfile1 ffmpeg rsync zip unzip curl alsa-utils
+        portaudio-devel libsndfile1 ffmpeg rsync zip unzip curl alsa-utils git
       ;;
   esac
 }
@@ -159,7 +162,11 @@ BIRD_MONITOR_CHANNELS=1
 BIRD_MONITOR_SEGMENT_SECONDS=60
 BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=0.2
 BIRD_MONITOR_DISABLE_RECORDER=false
-BIRD_MONITOR_SPECIES_PROVIDER=disabled
+BIRD_MONITOR_LOCATION_NAME=
+BIRD_MONITOR_LATITUDE=
+BIRD_MONITOR_LONGITUDE=
+BIRD_MONITOR_SPECIES_PROVIDER=birdnet
+BIRD_MONITOR_SPECIES_MIN_CONFIDENCE=0.35
 EOF
   fi
 
@@ -171,28 +178,41 @@ EOF
   grep -q '^BIRD_MONITOR_SEGMENT_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SEGMENT_SECONDS=60" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=0.2" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_DISABLE_RECORDER=' "${ENV_FILE}" || echo "BIRD_MONITOR_DISABLE_RECORDER=false" >> "${ENV_FILE}"
-  grep -q '^BIRD_MONITOR_SPECIES_PROVIDER=' "${ENV_FILE}" || echo "BIRD_MONITOR_SPECIES_PROVIDER=disabled" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_LOCATION_NAME=' "${ENV_FILE}" || echo "BIRD_MONITOR_LOCATION_NAME=" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_LATITUDE=' "${ENV_FILE}" || echo "BIRD_MONITOR_LATITUDE=" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_LONGITUDE=' "${ENV_FILE}" || echo "BIRD_MONITOR_LONGITUDE=" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_SPECIES_PROVIDER=' "${ENV_FILE}" || echo "BIRD_MONITOR_SPECIES_PROVIDER=birdnet" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_SPECIES_MIN_CONFIDENCE=' "${ENV_FILE}" || echo "BIRD_MONITOR_SPECIES_MIN_CONFIDENCE=0.35" >> "${ENV_FILE}"
 
   chown "root:${SERVICE_USER}" "${ENV_FILE}"
   chmod 640 "${ENV_FILE}"
 }
 
+prepare_source_checkout() {
+  SOURCE_DIR="$(mktemp -d)"
+  SOURCE_IS_TEMP="true"
+  log "Downloading the latest application source from ${REPO_URL}."
+  if ! git clone --depth 1 "${REPO_URL}" "${SOURCE_DIR}"; then
+    cleanup_source_checkout
+    die "Could not download the latest code from ${REPO_URL}. Check git and network access."
+  fi
+}
+
+cleanup_source_checkout() {
+  if [[ "${SOURCE_IS_TEMP}" == "true" ]] && [[ -n "${SOURCE_DIR}" ]] && [[ -d "${SOURCE_DIR}" ]]; then
+    rm -rf "${SOURCE_DIR}"
+  fi
+  SOURCE_DIR=""
+  SOURCE_IS_TEMP="false"
+}
+
 sync_source() {
   log "Copying application files into ${CURRENT_DIR}."
-  local source_real target_real
-  source_real="$(cd "${SCRIPT_DIR}" && pwd -P)"
-  mkdir -p "${CURRENT_DIR}"
-  target_real="$(cd "${CURRENT_DIR}" && pwd -P)"
-
-  if [[ "${source_real}" == "${target_real}" ]]; then
-    log "Installer is already running from ${CURRENT_DIR}; reusing the current source tree."
-    if [[ -d "${CURRENT_DIR}/.git" ]]; then
-      git -C "${CURRENT_DIR}" remote get-url origin >/dev/null 2>&1 || git -C "${CURRENT_DIR}" remote add origin "${REPO_URL}"
-      git -C "${CURRENT_DIR}" remote set-url origin "${REPO_URL}"
-    fi
-    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}"
-    return
+  if [[ -z "${SOURCE_DIR}" ]] || [[ ! -d "${SOURCE_DIR}" ]]; then
+    die "No downloaded source tree is available."
   fi
+
+  mkdir -p "${CURRENT_DIR}"
 
   rsync -a --delete \
     --exclude '.git' \
@@ -200,11 +220,12 @@ sync_source() {
     --exclude '.venv' \
     --exclude '__pycache__' \
     --exclude '.pytest_cache' \
-    "${SCRIPT_DIR}/" "${CURRENT_DIR}/"
+    "${SOURCE_DIR}/" "${CURRENT_DIR}/"
 
   chmod +x "${CURRENT_DIR}/install.sh" "${CURRENT_DIR}/run_server.sh"
-  if [[ -d "${SCRIPT_DIR}/.git" ]]; then
-    rsync -a "${SCRIPT_DIR}/.git/" "${CURRENT_DIR}/.git/"
+  if [[ -d "${SOURCE_DIR}/.git" ]]; then
+    mkdir -p "${CURRENT_DIR}/.git"
+    rsync -a --delete "${SOURCE_DIR}/.git/" "${CURRENT_DIR}/.git/"
     git -C "${CURRENT_DIR}" remote get-url origin >/dev/null 2>&1 || git -C "${CURRENT_DIR}" remote add origin "${REPO_URL}"
     git -C "${CURRENT_DIR}" remote set-url origin "${REPO_URL}"
   fi
@@ -217,6 +238,35 @@ create_virtualenv() {
   "${PYTHON_BIN}" -m venv "${VENV_DIR}"
   "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
   "${VENV_DIR}/bin/pip" install -r "${CURRENT_DIR}/requirements.txt"
+  install_species_runtime
+}
+
+install_species_runtime() {
+  if "${VENV_DIR}/bin/python" -c "import birdnetlib, librosa" >/dev/null 2>&1; then
+    log "BirdNET Python packages are available."
+  elif "${VENV_DIR}/bin/pip" install birdnetlib librosa; then
+    log "Installed BirdNET Python packages."
+  else
+    warn "BirdNET Python packages could not be installed automatically. Recording will still work, but species labels will remain unavailable until birdnetlib and librosa are installed in ${VENV_DIR}."
+    return
+  fi
+
+  if "${VENV_DIR}/bin/python" -c "import tflite_runtime" >/dev/null 2>&1; then
+    log "TensorFlow Lite runtime is already available for BirdNET."
+    return
+  fi
+
+  log "Installing TensorFlow Lite runtime for BirdNET."
+  if "${VENV_DIR}/bin/pip" install tflite-runtime; then
+    return
+  fi
+
+  warn "tflite-runtime could not be installed automatically. Trying full TensorFlow as a fallback."
+  if "${VENV_DIR}/bin/pip" install tensorflow; then
+    return
+  fi
+
+  warn "BirdNET runtime packages could not be installed automatically. Recording will still work, but species labels will remain unavailable until TensorFlow Lite or TensorFlow is installed in ${VENV_DIR}."
 }
 
 initialize_database() {
@@ -335,7 +385,8 @@ show_post_install_notes() {
   local port
   port="$(grep '^BIRD_MONITOR_PORT=' "${ENV_FILE}" | tail -n1 | cut -d= -f2-)"
   log "Server is up. Open http://$(hostname -f 2>/dev/null || hostname):${port:-8080}"
-  log "If the USB microphone name changes, edit ${ENV_FILE} or use the web settings page."
+  log "Open /settings in the web interface to configure the microphone, BirdNET species analysis, and recording schedules."
+  log "Re-running install.sh will now download the latest code directly from ${REPO_URL} for updates."
   if [[ -f "${RUN_MODE_FILE}" ]] && [[ "$(cat "${RUN_MODE_FILE}")" == "nohup" ]]; then
     log "Logs are being written to ${LOG_DIR}/server.log"
   else
@@ -351,7 +402,9 @@ perform_install_or_update() {
   ensure_directories
   ensure_env_file
   stop_process_if_running
+  prepare_source_checkout
   sync_source
+  cleanup_source_checkout
   create_virtualenv
   initialize_database
   start_service
