@@ -126,7 +126,8 @@ h1 {
 
 .controls-panel,
 .settings-panel,
-.schedule-panel {
+.schedule-panel,
+.stats-panel {
   grid-column: span 4;
 }
 
@@ -143,6 +144,10 @@ h1 {
 }
 
 .settings-panel-wide {
+  grid-column: span 6;
+}
+
+.stats-panel {
   grid-column: span 6;
 }
 
@@ -296,6 +301,12 @@ h1 {
   font-size: 0.95rem;
 }
 
+.inline-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
 .button-row,
 .time-row {
   display: grid;
@@ -387,6 +398,7 @@ button:hover {
   margin-top: 18px;
 }
 
+#location-note,
 #species-status-note {
   margin-top: 12px;
 }
@@ -416,71 +428,86 @@ button:hover {
   padding: 0 12px;
 }
 
-.timeline-days {
-  display: grid;
-  gap: 18px;
-}
-
-.day-row {
-  display: grid;
-  gap: 12px;
-}
-
-.day-label {
+.timeline-toolbar {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  font-weight: 700;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.timeline-lane {
+.timeline-scroll {
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.timeline-canvas {
+  min-width: 100%;
+}
+
+.timeline-range {
   position: relative;
-  min-height: 110px;
-  padding-top: 28px;
-  border-radius: 20px;
-  overflow: hidden;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(246, 241, 230, 0.8)),
-    repeating-linear-gradient(
-      90deg,
-      rgba(76, 58, 39, 0.06) 0,
-      rgba(76, 58, 39, 0.06) 1px,
-      transparent 1px,
-      transparent calc(100% / 24)
-    );
+  min-height: 270px;
+}
+
+.timeline-axis {
+  position: relative;
+  height: 44px;
+}
+
+.time-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-1px);
+}
+
+.time-tick-line {
+  display: block;
+  width: 2px;
+  height: 210px;
+  background: rgba(76, 58, 39, 0.08);
+}
+
+.time-tick-label {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  font-size: 0.76rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.timeline-range-track {
+  position: relative;
+  min-height: 220px;
+  border-radius: 22px;
   border: 1px solid rgba(76, 58, 39, 0.09);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(246, 241, 230, 0.85)),
+    linear-gradient(180deg, rgba(31, 107, 69, 0.04), transparent 50%);
+  overflow: hidden;
 }
 
-.hour-strip {
+.recording-lane {
   position: absolute;
-  inset: 0 0 auto 0;
-  display: grid;
-  grid-template-columns: repeat(24, minmax(0, 1fr));
+  inset: 0;
 }
 
-.hour-label {
-  font-size: 0.75rem;
-  color: rgba(110, 93, 73, 0.9);
-  padding: 8px 6px 0;
-}
-
-.recording-block {
+.recording-segment {
   position: absolute;
-  top: 50px;
-  height: 30px;
-  min-width: 4px;
+  top: 158px;
+  height: 34px;
+  min-width: 6px;
   border-radius: 999px;
   background: linear-gradient(90deg, #275a72, #2f8c7a);
   box-shadow: 0 8px 14px rgba(39, 90, 114, 0.18);
   text-decoration: none;
 }
 
-.recording-block.has-birds {
+.recording-segment.has-birds {
   background: linear-gradient(90deg, #2f8c7a, #5aa545);
 }
 
-.recording-block-label {
+.recording-segment-label {
   position: absolute;
   top: -24px;
   left: 0;
@@ -489,46 +516,95 @@ button:hover {
   color: var(--muted);
 }
 
-.bird-marker {
+.species-lane {
   position: absolute;
-  top: 4px;
-  width: 10px;
-  height: 22px;
-  margin-left: -5px;
+  inset: 0;
+}
+
+.species-event-chip {
+  position: absolute;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
   border-radius: 999px;
-  background: var(--bird);
-  box-shadow: 0 0 0 4px rgba(240, 122, 40, 0.16);
+  background: rgba(31, 107, 69, 0.14);
+  border: 1px solid rgba(31, 107, 69, 0.16);
+  box-shadow: 0 10px 18px rgba(31, 107, 69, 0.08);
+  color: var(--accent);
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.bird-marker.is-species {
-  background: #1f6b45;
-  box-shadow: 0 0 0 4px rgba(31, 107, 69, 0.18);
+.species-event-chip strong,
+.species-stat-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.day-detection-list {
-  display: flex;
-  flex-wrap: wrap;
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.stat-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.stat-card span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.stat-card strong {
+  font-size: 1.25rem;
+}
+
+.species-stats-list {
+  display: grid;
   gap: 10px;
 }
 
-.detection-chip,
-.day-detection-empty {
-  display: inline-flex;
+.species-stat-row {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  min-height: 38px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(76, 58, 39, 0.1);
-  background: rgba(255, 255, 255, 0.74);
-  color: var(--muted);
-  text-decoration: none;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(76, 58, 39, 0.08);
 }
 
-.detection-chip.has-species {
-  background: rgba(31, 107, 69, 0.12);
-  border-color: rgba(31, 107, 69, 0.18);
-  color: var(--accent);
-  font-weight: 600;
+.species-stat-row > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.species-scientific {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-style: italic;
+}
+
+.species-stat-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
 }
 
 .empty-state {
@@ -571,14 +647,25 @@ button:hover {
     grid-template-columns: 1fr;
   }
 
+  .inline-action {
+    grid-template-columns: 1fr;
+  }
+
   .activity-top,
   .wave-meta,
-  .manual-actions {
+  .manual-actions,
+  .timeline-toolbar,
+  .species-stat-row,
+  .species-stat-metrics {
     flex-direction: column;
     align-items: stretch;
   }
 
   .status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-grid {
     grid-template-columns: 1fr;
   }
 }

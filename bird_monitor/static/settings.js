@@ -6,6 +6,7 @@ const settingsState = {
   settings: null,
   status: null,
   selectedDays: new Set([0, 1, 2, 3, 4, 5, 6]),
+  lastResolvedAddress: "",
 };
 
 const settingsElements = {
@@ -19,9 +20,11 @@ const settingsElements = {
   speciesProvider: document.querySelector("#species-provider"),
   speciesMinConfidence: document.querySelector("#species-min-confidence"),
   locationName: document.querySelector("#location-name"),
+  resolveAddressButton: document.querySelector("#resolve-address-button"),
   latitude: document.querySelector("#latitude"),
   longitude: document.querySelector("#longitude"),
   devicesNote: document.querySelector("#devices-note"),
+  locationNote: document.querySelector("#location-note"),
   speciesStatusNote: document.querySelector("#species-status-note"),
   scheduleForm: document.querySelector("#schedule-form"),
   scheduleName: document.querySelector("#schedule-name"),
@@ -74,17 +77,44 @@ function settingsBindEvents() {
   settingsElements.deviceIndex.addEventListener("change", () => {
     settingsRenderCompatibilityOptions();
   });
+
   settingsElements.speciesProvider.addEventListener("change", () => {
     settingsRenderSpeciesStatus();
   });
+
   settingsElements.locationName.addEventListener("input", () => {
+    settingsInvalidateResolvedAddress();
     settingsRenderSpeciesStatus();
+  });
+
+  settingsElements.locationName.addEventListener("blur", async () => {
+    if (!settingsNeedsGeocode()) {
+      return;
+    }
+    try {
+      await settingsResolveAddress();
+    } catch (error) {
+      settingsElements.locationNote.textContent = error.message || String(error);
+    }
+  });
+
+  settingsElements.resolveAddressButton.addEventListener("click", async () => {
+    try {
+      await settingsResolveAddress(true);
+    } catch (error) {
+      settingsElements.locationNote.textContent = error.message || String(error);
+    }
   });
 
   settingsElements.settingsForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
       const selectedIndex = settingsElements.deviceIndex.value;
+      const needsGeocode = settingsNeedsGeocode();
+      if (needsGeocode) {
+        await settingsResolveAddress(true);
+      }
+
       await settingsFetchJson("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -100,6 +130,7 @@ function settingsBindEvents() {
           location_name: settingsElements.locationName.value.trim(),
           latitude: settingsElements.latitude.value === "" ? null : Number(settingsElements.latitude.value),
           longitude: settingsElements.longitude.value === "" ? null : Number(settingsElements.longitude.value),
+          auto_geocode: false,
         }),
       });
       await settingsRefreshAll();
@@ -197,7 +228,9 @@ function settingsRenderSettings() {
   settingsElements.locationName.value = settingsState.settings.location_name || "";
   settingsElements.latitude.value = settingsState.settings.latitude ?? "";
   settingsElements.longitude.value = settingsState.settings.longitude ?? "";
+  settingsState.lastResolvedAddress = settingsState.settings.location_name || "";
   settingsRenderCompatibilityOptions();
+  settingsRenderLocationNote();
   settingsRenderSpeciesStatus();
 }
 
@@ -226,6 +259,80 @@ function settingsPopulateSelect(selectElement, values, preferredValue) {
   }
 }
 
+function settingsNeedsGeocode() {
+  const query = settingsElements.locationName.value.trim();
+  return Boolean(
+    query && (
+      query !== settingsState.lastResolvedAddress
+      || settingsElements.latitude.value === ""
+      || settingsElements.longitude.value === ""
+    )
+  );
+}
+
+function settingsInvalidateResolvedAddress() {
+  if (!settingsElements.locationName.value.trim()) {
+    settingsState.lastResolvedAddress = "";
+    settingsElements.latitude.value = "";
+    settingsElements.longitude.value = "";
+    settingsRenderLocationNote();
+    return;
+  }
+
+  if (settingsElements.locationName.value.trim() !== settingsState.lastResolvedAddress) {
+    settingsElements.locationNote.textContent = "Address changed. Coordinates will be refreshed automatically when you save.";
+  }
+}
+
+async function settingsResolveAddress(force = false) {
+  const query = settingsElements.locationName.value.trim();
+  if (!query) {
+    settingsState.lastResolvedAddress = "";
+    settingsRenderLocationNote();
+    return null;
+  }
+
+  if (!force && !settingsNeedsGeocode()) {
+    return {
+      display_name: settingsElements.locationName.value.trim(),
+      latitude: Number(settingsElements.latitude.value),
+      longitude: Number(settingsElements.longitude.value),
+    };
+  }
+
+  settingsElements.locationNote.textContent = "Resolving address...";
+  const payload = await settingsFetchJson("/api/geocode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+
+  settingsElements.locationName.value = payload.display_name;
+  settingsElements.latitude.value = Number(payload.latitude).toFixed(5);
+  settingsElements.longitude.value = Number(payload.longitude).toFixed(5);
+  settingsState.lastResolvedAddress = payload.display_name;
+  settingsRenderLocationNote();
+  return payload;
+}
+
+function settingsRenderLocationNote() {
+  const query = settingsElements.locationName.value.trim();
+  const latitude = settingsElements.latitude.value;
+  const longitude = settingsElements.longitude.value;
+
+  if (!query) {
+    settingsElements.locationNote.textContent = "Enter an address or place name and the coordinates will be filled automatically.";
+    return;
+  }
+
+  if (latitude !== "" && longitude !== "") {
+    settingsElements.locationNote.textContent = `Resolved location: ${query} (${latitude}, ${longitude}).`;
+    return;
+  }
+
+  settingsElements.locationNote.textContent = "Enter an address or place name and the coordinates will be filled automatically.";
+}
+
 function settingsRenderSpeciesStatus() {
   const provider = settingsElements.speciesProvider.value || settingsState.settings?.species_provider || "disabled";
   const status = settingsState.status || {};
@@ -234,7 +341,7 @@ function settingsRenderSpeciesStatus() {
     const locationText = settingsElements.locationName.value.trim()
       ? ` for ${settingsElements.locationName.value.trim()}`
       : "";
-    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. Each saved recording is analyzed after capture using the configured coordinates, when available, and the recording date.`;
+    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. Each saved recording is analyzed after capture using the configured coordinates and the recording date.`;
     return;
   }
 
@@ -244,7 +351,7 @@ function settingsRenderSpeciesStatus() {
   }
 
   if (provider === "birdnet") {
-    settingsElements.speciesStatusNote.textContent = "BirdNET is selected. Saved recordings will be analyzed after capture using the configured coordinates, when available, and the recording date.";
+    settingsElements.speciesStatusNote.textContent = "BirdNET is selected. Saved recordings will be analyzed after capture using the configured coordinates and the recording date.";
     return;
   }
 

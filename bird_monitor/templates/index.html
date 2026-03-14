@@ -89,19 +89,36 @@
             </div>
           </form>
           <p class="panel-copy">
-            Each lane shows one day. Recording blocks are clickable audio files, and bright markers show detected bird activity.
+            The dashboard starts with the last six hours. Use the zoom buttons and horizontal scroll to inspect species events in more detail.
           </p>
+        </section>
+
+        <section class="panel stats-panel">
+          <div class="panel-head">
+            <h2>Species Statistics</h2>
+            <p id="stats-summary">No species events loaded yet.</p>
+          </div>
+          <div class="stats-grid" id="stats-grid"></div>
+          <div class="species-stats-list" id="species-stats-list"></div>
         </section>
 
         <section class="panel timeline-panel">
           <div class="panel-head">
             <h2>Continuous Timeline</h2>
-            <p id="timeline-summary">No data loaded yet.</p>
+            <div class="timeline-toolbar">
+              <button type="button" id="zoom-out-button" class="secondary-button">Zoom out</button>
+              <span id="zoom-label">100%</span>
+              <button type="button" id="zoom-in-button" class="secondary-button">Zoom in</button>
+              <button type="button" id="zoom-fit-button" class="secondary-button">Fit</button>
+            </div>
           </div>
+          <p id="timeline-summary">No data loaded yet.</p>
           <div id="timeline-empty" class="empty-state">
             Load a date range to see recordings.
           </div>
-          <div id="timeline-days" class="timeline-days"></div>
+          <div id="timeline-scroll" class="timeline-scroll">
+            <div id="timeline-canvas" class="timeline-canvas"></div>
+          </div>
         </section>
       </main>
     </div>

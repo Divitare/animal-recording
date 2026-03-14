@@ -9,8 +9,14 @@ from pathlib import Path
 
 from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, url_for
 
+from .analytics import (
+    SPECIES_EVENT_MERGE_GAP_SECONDS,
+    build_species_events,
+    build_species_statistics,
+)
 from .audio import input_setting_supported, list_input_devices, resolve_input_device
 from .extensions import db
+from .geocoding import GeocodingError, geocode_address
 from .models import BirdDetection, RecorderSettings, Recording, RecordingSchedule
 from .services import get_background_manager
 
@@ -81,6 +87,21 @@ def get_settings():
     return jsonify(RecorderSettings.get_or_create().to_dict())
 
 
+@api_bp.post("/geocode")
+def geocode_location():
+    payload = request.get_json(silent=True) or {}
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        return _json_error("An address or place name is required.")
+
+    try:
+        result = geocode_address(query)
+    except GeocodingError as exc:
+        return _json_error(str(exc))
+
+    return jsonify(result.to_dict())
+
+
 @api_bp.put("/settings")
 def update_settings():
     payload = request.get_json(silent=True) or {}
@@ -121,6 +142,20 @@ def update_settings():
             settings.species_min_confidence = min(0.99, max(0.05, float(payload["species_min_confidence"])))
     except (TypeError, ValueError) as exc:
         return _json_error(f"Invalid settings value: {exc}")
+
+    should_auto_geocode = bool(payload.get("auto_geocode")) or (
+        settings.location_name
+        and ("latitude" not in payload or payload.get("latitude") in ("", None))
+        and ("longitude" not in payload or payload.get("longitude") in ("", None))
+    )
+    if settings.location_name and should_auto_geocode:
+        try:
+            geocoded = geocode_address(settings.location_name)
+        except GeocodingError as exc:
+            return _json_error(str(exc))
+        settings.location_name = geocoded.display_name
+        settings.latitude = geocoded.latitude
+        settings.longitude = geocoded.longitude
 
     if settings.latitude is not None and not (-90.0 <= settings.latitude <= 90.0):
         return _json_error("Latitude must be between -90 and 90.")
@@ -244,6 +279,8 @@ def list_recordings():
         .order_by(Recording.started_at.asc())
         .all()
     )
+    species_events = build_species_events(recordings)
+    species_stats = build_species_statistics(species_events)
     return jsonify(
         {
             "range": {
@@ -251,6 +288,9 @@ def list_recordings():
                 "end": end_at.replace(tzinfo=timezone.utc).isoformat(),
             },
             "items": [serialize_recording(item) for item in recordings],
+            "species_events": [event.to_dict() for event in species_events],
+            "species_stats": species_stats,
+            "species_event_merge_gap_seconds": SPECIES_EVENT_MERGE_GAP_SECONDS,
         }
     )
 

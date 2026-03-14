@@ -1,7 +1,16 @@
+const BASE_PIXELS_PER_HOUR = 220;
+const MIN_ZOOM = 0.45;
+const MAX_ZOOM = 4;
+
 const dashboardState = {
   recordings: [],
+  speciesEvents: [],
+  speciesStats: [],
+  range: null,
+  mergeGapSeconds: 600,
   status: null,
   livePollHandle: null,
+  zoomFactor: 1,
 };
 
 const dashboardElements = {
@@ -14,7 +23,15 @@ const dashboardElements = {
   manualStopButton: document.querySelector("#manual-stop-button"),
   timelineSummary: document.querySelector("#timeline-summary"),
   timelineEmpty: document.querySelector("#timeline-empty"),
-  timelineDays: document.querySelector("#timeline-days"),
+  timelineScroll: document.querySelector("#timeline-scroll"),
+  timelineCanvas: document.querySelector("#timeline-canvas"),
+  zoomOutButton: document.querySelector("#zoom-out-button"),
+  zoomInButton: document.querySelector("#zoom-in-button"),
+  zoomFitButton: document.querySelector("#zoom-fit-button"),
+  zoomLabel: document.querySelector("#zoom-label"),
+  statsSummary: document.querySelector("#stats-summary"),
+  statsGrid: document.querySelector("#stats-grid"),
+  speciesStatsList: document.querySelector("#species-stats-list"),
   serviceState: document.querySelector("#service-state"),
   serviceSummary: document.querySelector("#service-summary"),
   activityMessage: document.querySelector("#activity-message"),
@@ -60,7 +77,7 @@ function dashboardDatetimeLocalValue(date) {
 
 function dashboardSetDefaultRange() {
   const end = new Date();
-  const start = new Date(end.getTime() - (72 * 60 * 60 * 1000));
+  const start = new Date(end.getTime() - (6 * 60 * 60 * 1000));
   dashboardElements.rangeStart.value = dashboardDatetimeLocalValue(start);
   dashboardElements.rangeEnd.value = dashboardDatetimeLocalValue(end);
 }
@@ -69,7 +86,7 @@ function dashboardBindEvents() {
   dashboardElements.rangeForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      await dashboardLoadRecordings();
+      await dashboardLoadRecordings(true);
     } catch (error) {
       dashboardShowError(error);
     }
@@ -128,11 +145,26 @@ function dashboardBindEvents() {
       dashboardShowError(error);
     }
   });
+
+  dashboardElements.zoomOutButton.addEventListener("click", () => {
+    dashboardState.zoomFactor = Math.max(MIN_ZOOM, dashboardState.zoomFactor / 1.35);
+    dashboardRenderTimeline();
+  });
+
+  dashboardElements.zoomInButton.addEventListener("click", () => {
+    dashboardState.zoomFactor = Math.min(MAX_ZOOM, dashboardState.zoomFactor * 1.35);
+    dashboardRenderTimeline();
+  });
+
+  dashboardElements.zoomFitButton.addEventListener("click", () => {
+    dashboardFitTimeline();
+    dashboardRenderTimeline();
+  });
 }
 
 async function dashboardRefreshAll() {
   await dashboardLoadStatus();
-  await dashboardLoadRecordings();
+  await dashboardLoadRecordings(false);
 }
 
 async function dashboardLoadStatus() {
@@ -160,14 +192,22 @@ function dashboardStartLivePolling() {
   }, 1000);
 }
 
-async function dashboardLoadRecordings() {
+async function dashboardLoadRecordings(resetZoom) {
   const params = new URLSearchParams({
     start: new Date(dashboardElements.rangeStart.value).toISOString(),
     end: new Date(dashboardElements.rangeEnd.value).toISOString(),
   });
   const payload = await dashboardFetchJson(`/api/recordings?${params.toString()}`);
-  dashboardState.recordings = payload.items;
-  dashboardRenderTimeline(payload.range);
+  dashboardState.recordings = payload.items || [];
+  dashboardState.speciesEvents = payload.species_events || [];
+  dashboardState.speciesStats = payload.species_stats || [];
+  dashboardState.mergeGapSeconds = payload.species_event_merge_gap_seconds || 600;
+  dashboardState.range = payload.range;
+  if (resetZoom) {
+    dashboardFitTimeline();
+  }
+  dashboardRenderTimeline();
+  dashboardRenderStatistics();
 }
 
 function dashboardRenderStatus(payload) {
@@ -208,7 +248,7 @@ function dashboardRenderService(service) {
 
 function dashboardBuildSpeciesState(service) {
   if (service.species_enabled) {
-    return "BirdNET active";
+    return "BirdNET species detection active";
   }
   if (service.species_provider === "birdnet") {
     return service.species_available === false ? "BirdNET unavailable" : "BirdNET selected";
@@ -290,163 +330,273 @@ function dashboardRenderWaveform(samples) {
   context.stroke();
 }
 
-function dashboardRenderTimeline(range) {
-  dashboardElements.timelineDays.innerHTML = "";
-
-  if (!dashboardState.recordings.length) {
-    dashboardElements.timelineEmpty.style.display = "block";
-    dashboardElements.timelineSummary.textContent = `No recordings found between ${new Date(range.start).toLocaleString()} and ${new Date(range.end).toLocaleString()}.`;
+function dashboardFitTimeline() {
+  if (!dashboardState.range) {
+    dashboardState.zoomFactor = 1;
     return;
   }
 
-  dashboardElements.timelineEmpty.style.display = "none";
+  const durationHours = dashboardRangeDurationHours();
+  const availableWidth = Math.max(dashboardElements.timelineScroll.clientWidth - 40, 400);
+  const computedZoom = availableWidth / Math.max(durationHours * BASE_PIXELS_PER_HOUR, 1);
+  dashboardState.zoomFactor = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, computedZoom));
+}
+
+function dashboardRenderTimeline() {
+  dashboardElements.timelineCanvas.innerHTML = "";
+
+  if (!dashboardState.range) {
+    dashboardElements.timelineEmpty.style.display = "block";
+    dashboardElements.timelineSummary.textContent = "No data loaded yet.";
+    dashboardUpdateZoomLabel();
+    return;
+  }
+
   const totalDetections = dashboardState.recordings.reduce(
     (sum, recording) => sum + (recording.detections?.length || 0),
     0,
   );
-  dashboardElements.timelineSummary.textContent = `${dashboardState.recordings.length} recording segment(s) and ${totalDetections} bird detection(s) between ${new Date(range.start).toLocaleString()} and ${new Date(range.end).toLocaleString()}.`;
+  dashboardElements.timelineSummary.textContent = `${dashboardState.recordings.length} recording segment(s), ${dashboardState.speciesEvents.length} merged species event(s), and ${totalDetections} raw detection(s) between ${dashboardFormatDateTime(dashboardState.range.start)} and ${dashboardFormatDateTime(dashboardState.range.end)}.`;
+  dashboardUpdateZoomLabel();
 
-  const grouped = new Map();
-  dashboardState.recordings.forEach((recording) => {
-    const localStart = new Date(recording.started_at);
-    const dayKey = `${localStart.getFullYear()}-${`${localStart.getMonth() + 1}`.padStart(2, "0")}-${`${localStart.getDate()}`.padStart(2, "0")}`;
-    if (!grouped.has(dayKey)) {
-      grouped.set(dayKey, []);
-    }
-    grouped.get(dayKey).push(recording);
-  });
-
-  Array.from(grouped.entries())
-    .sort(([left], [right]) => new Date(left) - new Date(right))
-    .forEach(([dayKey, items]) => {
-      const row = document.createElement("section");
-      row.className = "day-row";
-
-      const date = new Date(`${dayKey}T00:00:00`);
-      const label = document.createElement("div");
-      label.className = "day-label";
-      label.innerHTML = `
-        <span>${date.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "short", day: "numeric" })}</span>
-        <span>${items.length} file(s)</span>
-      `;
-      row.append(label);
-
-      const lane = document.createElement("div");
-      lane.className = "timeline-lane";
-      lane.append(dashboardBuildHourStrip());
-
-      items.forEach((recording) => {
-        lane.append(dashboardBuildRecordingBlock(recording));
-      });
-
-      row.append(lane);
-      row.append(dashboardBuildDayDetectionList(items));
-      dashboardElements.timelineDays.append(row);
-    });
-}
-
-function dashboardBuildHourStrip() {
-  const strip = document.createElement("div");
-  strip.className = "hour-strip";
-  for (let hour = 0; hour < 24; hour += 1) {
-    const label = document.createElement("div");
-    label.className = "hour-label";
-    label.textContent = `${`${hour}`.padStart(2, "0")}:00`;
-    strip.append(label);
+  if (!dashboardState.recordings.length && !dashboardState.speciesEvents.length) {
+    dashboardElements.timelineEmpty.style.display = "block";
+    dashboardElements.timelineEmpty.textContent = "No recordings or species detections were found in this time span.";
+    return;
   }
-  return strip;
+
+  dashboardElements.timelineEmpty.style.display = "none";
+
+  const canvas = document.createElement("div");
+  canvas.className = "timeline-range";
+  const width = dashboardTimelineWidth();
+  canvas.style.width = `${width}px`;
+
+  canvas.append(dashboardBuildAxis(width));
+  canvas.append(dashboardBuildRangeTrack(width));
+  dashboardElements.timelineCanvas.append(canvas);
 }
 
-function dashboardBuildRecordingBlock(recording) {
+function dashboardBuildAxis(width) {
+  const axis = document.createElement("div");
+  axis.className = "timeline-axis";
+  const ticks = dashboardBuildTicks(width);
+  ticks.forEach((tick) => axis.append(tick));
+  return axis;
+}
+
+function dashboardBuildRangeTrack(width) {
+  const track = document.createElement("div");
+  track.className = "timeline-range-track";
+
+  const recordingLane = document.createElement("div");
+  recordingLane.className = "recording-lane";
+  dashboardState.recordings.forEach((recording) => {
+    recordingLane.append(dashboardBuildRecordingBlock(recording, width));
+  });
+  track.append(recordingLane);
+
+  const speciesLane = document.createElement("div");
+  speciesLane.className = "species-lane";
+  dashboardState.speciesEvents.forEach((event, index) => {
+    speciesLane.append(dashboardBuildSpeciesEventChip(event, index, width));
+  });
+  track.append(speciesLane);
+
+  return track;
+}
+
+function dashboardBuildTicks(width) {
+  const ticks = [];
+  const start = new Date(dashboardState.range.start);
+  const end = new Date(dashboardState.range.end);
+  const durationHours = dashboardRangeDurationHours();
+  const intervalMinutes = dashboardSelectTickMinutes(durationHours, width);
+  const firstTick = new Date(start);
+  firstTick.setSeconds(0, 0);
+  firstTick.setMinutes(Math.ceil(firstTick.getMinutes() / intervalMinutes) * intervalMinutes);
+
+  if (firstTick < start) {
+    firstTick.setMinutes(firstTick.getMinutes() + intervalMinutes);
+  }
+
+  for (let tick = new Date(firstTick); tick <= end; tick = new Date(tick.getTime() + (intervalMinutes * 60 * 1000))) {
+    const marker = document.createElement("div");
+    marker.className = "time-tick";
+    marker.style.left = `${dashboardRangeRatio(tick) * width}px`;
+    marker.innerHTML = `
+      <span class="time-tick-line"></span>
+      <span class="time-tick-label">${tick.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+    `;
+    ticks.push(marker);
+  }
+
+  return ticks;
+}
+
+function dashboardSelectTickMinutes(durationHours, width) {
+  const maxTicks = Math.max(Math.floor(width / 140), 3);
+  const candidates = [5, 10, 15, 30, 60, 120, 180, 360, 720];
+  return candidates.find((candidate) => ((durationHours * 60) / candidate) <= maxTicks) || 720;
+}
+
+function dashboardBuildRecordingBlock(recording, width) {
   const block = document.createElement("a");
-  block.className = `recording-block${recording.has_bird_activity ? " has-birds" : ""}`;
+  block.className = `recording-segment${recording.has_bird_activity ? " has-birds" : ""}`;
   block.href = recording.audio_url;
   block.target = "_blank";
   block.rel = "noopener";
 
-  const localStart = new Date(recording.started_at);
-  const localEnd = new Date(recording.ended_at);
-  const startSeconds = (localStart.getHours() * 3600) + (localStart.getMinutes() * 60) + localStart.getSeconds();
-  const endSeconds = (localEnd.getHours() * 3600) + (localEnd.getMinutes() * 60) + localEnd.getSeconds();
-  const durationSeconds = Math.max((localEnd - localStart) / 1000, 1);
-  const laneEndSeconds = localEnd.toDateString() === localStart.toDateString() ? endSeconds : 86400;
-  const widthPercent = Math.max(((Math.max(laneEndSeconds, startSeconds + 1) - startSeconds) / 86400) * 100, 0.4);
-  const leftPercent = (startSeconds / 86400) * 100;
+  const start = new Date(recording.started_at);
+  const end = new Date(recording.ended_at);
+  const left = dashboardRangeRatio(start) * width;
+  const right = dashboardRangeRatio(end) * width;
+  const blockWidth = Math.max(right - left, 6);
 
-  block.style.left = `${leftPercent}%`;
-  block.style.width = `${widthPercent}%`;
-  block.title = dashboardBuildRecordingTitle(recording, localStart, localEnd);
+  block.style.left = `${left}px`;
+  block.style.width = `${blockWidth}px`;
+  block.title = dashboardBuildRecordingTitle(recording, start, end);
 
   const label = document.createElement("span");
-  label.className = "recording-block-label";
-  label.textContent = `${localStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  label.className = "recording-segment-label";
+  label.textContent = `${start.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
   block.append(label);
-
-  recording.detections.forEach((detection) => {
-    const detectionStart = new Date(detection.started_at);
-    const offsetPercent = (((detectionStart - localStart) / 1000) / durationSeconds) * 100;
-    const marker = document.createElement("span");
-    marker.className = `bird-marker${detection.species_common_name ? " is-species" : ""}`;
-    marker.style.left = `${Math.min(Math.max(offsetPercent, 0), 100)}%`;
-    marker.title = dashboardBuildDetectionTitle(detection);
-    block.append(marker);
-  });
-
   return block;
 }
 
 function dashboardBuildRecordingTitle(recording, localStart, localEnd) {
   const detections = recording.detections || [];
   const summary = detections.length
-    ? detections.map((detection) => `${new Date(detection.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ${dashboardDetectionLabel(detection)}`).join(", ")
-    : "No bird detections";
+    ? detections.map((detection) => dashboardBuildDetectionInline(detection)).join(", ")
+    : "No detections";
   return `${localStart.toLocaleTimeString()} - ${localEnd.toLocaleTimeString()} | ${summary}`;
 }
 
-function dashboardBuildDayDetectionList(recordings) {
-  const container = document.createElement("div");
-  container.className = "day-detection-list";
+function dashboardBuildSpeciesEventChip(event, index, width) {
+  const chip = document.createElement("div");
+  chip.className = "species-event-chip";
+  chip.style.top = `${10 + ((index % 3) * 38)}px`;
 
-  const items = recordings
-    .flatMap((recording) => (recording.detections || []).map((detection) => ({
-      detection,
-      audioUrl: recording.audio_url,
-    })))
-    .sort((left, right) => new Date(left.detection.started_at) - new Date(right.detection.started_at));
+  const start = new Date(event.started_at);
+  const end = new Date(event.ended_at);
+  const left = dashboardRangeRatio(start) * width;
+  const right = dashboardRangeRatio(end) * width;
+  const naturalWidth = Math.max(right - left, 140);
+  const chipWidth = Math.min(Math.max(naturalWidth, 140), 260);
+  const maxLeft = Math.max(width - chipWidth - 6, 0);
 
-  if (!items.length) {
-    container.innerHTML = `<div class="day-detection-empty">No bird detections were found in these recordings.</div>`;
-    return container;
+  chip.style.left = `${Math.min(left, maxLeft)}px`;
+  chip.style.width = `${chipWidth}px`;
+  chip.title = dashboardBuildSpeciesEventTitle(event);
+  chip.innerHTML = `
+    <strong>${event.species_common_name}</strong>
+    <span>${Math.round((event.confidence || 0) * 100)}%</span>
+  `;
+  return chip;
+}
+
+function dashboardBuildSpeciesEventTitle(event) {
+  const scientific = event.species_scientific_name ? ` (${event.species_scientific_name})` : "";
+  return `${event.species_common_name}${scientific} | ${dashboardFormatDateTime(event.started_at)} - ${dashboardFormatDateTime(event.ended_at)} | best ${Math.round((event.confidence || 0) * 100)}% | average ${Math.round((event.average_confidence || 0) * 100)}% | ${event.detection_count} merged detection(s)`;
+}
+
+function dashboardRenderStatistics() {
+  dashboardElements.statsGrid.innerHTML = "";
+  dashboardElements.speciesStatsList.innerHTML = "";
+
+  if (!dashboardState.range) {
+    dashboardElements.statsSummary.textContent = "No species events loaded yet.";
+    return;
   }
 
-  items.forEach(({ detection, audioUrl }) => {
-    const link = document.createElement("a");
-    link.className = `detection-chip${detection.species_common_name ? " has-species" : ""}`;
-    link.href = audioUrl;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.title = dashboardBuildDetectionTitle(detection);
-    link.textContent = `${new Date(detection.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ${dashboardDetectionLabel(detection)}`;
-    container.append(link);
+  const mergedEvents = dashboardState.speciesEvents.length;
+  const speciesCount = dashboardState.speciesStats.length;
+  const bestConfidence = dashboardState.speciesEvents.reduce(
+    (best, event) => Math.max(best, Number(event.confidence || 0)),
+    0,
+  );
+  const lastSeen = dashboardState.speciesEvents.length
+    ? dashboardState.speciesEvents.reduce((latest, event) => new Date(event.ended_at) > new Date(latest.ended_at) ? event : latest).ended_at
+    : null;
+
+  dashboardElements.statsSummary.textContent = `${mergedEvents} merged species event(s) across ${speciesCount} species in the selected range. Same-species detections within ${Math.round(dashboardState.mergeGapSeconds / 60)} minutes count as one event.`;
+
+  const cards = [
+    { label: "Species", value: `${speciesCount}` },
+    { label: "Merged events", value: `${mergedEvents}` },
+    { label: "Best confidence", value: `${Math.round(bestConfidence * 100)}%` },
+    { label: "Last recognized", value: lastSeen ? new Date(lastSeen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-" },
+  ];
+
+  cards.forEach((card) => {
+    const wrapper = document.createElement("article");
+    wrapper.className = "stat-card";
+    wrapper.innerHTML = `
+      <span>${card.label}</span>
+      <strong>${card.value}</strong>
+    `;
+    dashboardElements.statsGrid.append(wrapper);
   });
 
-  return container;
-}
-
-function dashboardDetectionLabel(detection) {
-  if (detection.species_common_name) {
-    return detection.species_common_name;
+  if (!dashboardState.speciesStats.length) {
+    dashboardElements.speciesStatsList.innerHTML = `<div class="empty-state">No species were identified in this time span.</div>`;
+    return;
   }
-  return detection.source === "birdnet" ? "Bird detection" : "Bird activity";
+
+  dashboardState.speciesStats.forEach((item) => {
+    const row = document.createElement("article");
+    row.className = "species-stat-row";
+    const scientific = item.species_scientific_name ? `<span class="species-scientific">${item.species_scientific_name}</span>` : "";
+    row.innerHTML = `
+      <div>
+        <strong>${item.species_common_name}</strong>
+        ${scientific}
+      </div>
+      <div class="species-stat-metrics">
+        <span>${item.event_count} event(s)</span>
+        <span>${Math.round((item.average_confidence || 0) * 100)}% avg</span>
+        <span>${Math.round((item.best_confidence || 0) * 100)}% best</span>
+        <span>${item.last_seen_at ? `last ${new Date(item.last_seen_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "-"}</span>
+      </div>
+    `;
+    dashboardElements.speciesStatsList.append(row);
+  });
 }
 
-function dashboardBuildDetectionTitle(detection) {
-  const start = new Date(detection.started_at).toLocaleTimeString();
-  const end = new Date(detection.ended_at).toLocaleTimeString();
-  const species = detection.species_common_name || "Unclassified bird activity";
-  const scientific = detection.species_scientific_name ? ` (${detection.species_scientific_name})` : "";
-  const score = detection.species_score != null ? ` | species ${detection.species_score.toFixed(2)}` : "";
-  return `${species}${scientific} | ${start} - ${end} | confidence ${detection.confidence.toFixed(2)}${score}`;
+function dashboardBuildDetectionInline(detection) {
+  const label = detection.species_common_name || "Bird activity";
+  const confidence = detection.species_score != null ? detection.species_score : detection.confidence;
+  return `${new Date(detection.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ${label} ${Math.round((confidence || 0) * 100)}%`;
+}
+
+function dashboardUpdateZoomLabel() {
+  dashboardElements.zoomLabel.textContent = `${Math.round(dashboardState.zoomFactor * 100)}%`;
+}
+
+function dashboardRangeDurationHours() {
+  if (!dashboardState.range) {
+    return 1;
+  }
+  const start = new Date(dashboardState.range.start);
+  const end = new Date(dashboardState.range.end);
+  return Math.max((end - start) / (1000 * 60 * 60), 1 / 60);
+}
+
+function dashboardTimelineWidth() {
+  const width = dashboardRangeDurationHours() * BASE_PIXELS_PER_HOUR * dashboardState.zoomFactor;
+  return Math.max(width, dashboardElements.timelineScroll.clientWidth - 24, 720);
+}
+
+function dashboardRangeRatio(value) {
+  const target = value instanceof Date ? value : new Date(value);
+  const start = new Date(dashboardState.range.start);
+  const end = new Date(dashboardState.range.end);
+  const ratio = (target - start) / Math.max(end - start, 1);
+  return Math.max(0, Math.min(1, ratio));
+}
+
+function dashboardFormatDateTime(value) {
+  return new Date(value).toLocaleString();
 }
 
 async function initDashboard() {
@@ -454,7 +604,8 @@ async function initDashboard() {
   dashboardBindEvents();
   dashboardRenderWaveform(new Array(120).fill(0));
   try {
-    await dashboardRefreshAll();
+    await dashboardLoadStatus();
+    await dashboardLoadRecordings(true);
     dashboardStartLivePolling();
   } catch (error) {
     dashboardShowError(error);
