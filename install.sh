@@ -234,8 +234,6 @@ sync_source() {
   if [[ -d "${SOURCE_DIR}/.git" ]]; then
     mkdir -p "${CURRENT_DIR}/.git"
     rsync -a --delete "${SOURCE_DIR}/.git/" "${CURRENT_DIR}/.git/"
-    git -C "${CURRENT_DIR}" remote get-url origin >/dev/null 2>&1 || git -C "${CURRENT_DIR}" remote add origin "${REPO_URL}"
-    git -C "${CURRENT_DIR}" remote set-url origin "${REPO_URL}"
   fi
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}"
 }
