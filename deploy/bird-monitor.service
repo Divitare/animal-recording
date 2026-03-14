@@ -1,0 +1,19 @@
+[Unit]
+Description=Bird monitor recording server
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
+WorkingDirectory=__INSTALL_ROOT__/current
+EnvironmentFile=-__ENV_FILE__
+ExecStart=__INSTALL_ROOT__/current/run_server.sh
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

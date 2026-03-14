@@ -1,0 +1,280 @@
+from __future__ import annotations
+
+import csv
+import tempfile
+import zipfile
+from datetime import datetime, timedelta, timezone
+from io import StringIO
+from pathlib import Path
+
+from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, url_for
+
+from .audio import list_input_devices
+from .extensions import db
+from .models import BirdDetection, RecorderSettings, Recording, RecordingSchedule
+from .services import get_background_manager
+
+api_bp = Blueprint("api", __name__)
+
+
+def parse_client_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Invalid datetime value '{value}'.") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def serialize_recording(recording: Recording) -> dict[str, object]:
+    payload = recording.to_dict()
+    payload["audio_url"] = url_for("api.download_recording_audio", recording_id=recording.id)
+    return payload
+
+
+def _json_error(message: str, status_code: int = 400):
+    response = jsonify({"error": message})
+    response.status_code = status_code
+    return response
+
+
+@api_bp.get("/status")
+def status():
+    manager = get_background_manager()
+    settings = RecorderSettings.get_or_create()
+    return jsonify(
+        {
+            "service": manager.get_status() if manager else {"started": False, "is_recording": False},
+            "settings": settings.to_dict(),
+            "totals": {
+                "recordings": Recording.query.count(),
+                "detections": BirdDetection.query.count(),
+            },
+        }
+    )
+
+
+@api_bp.get("/devices")
+def devices():
+    try:
+        items = list_input_devices()
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)})
+    return jsonify({"items": items})
+
+
+@api_bp.get("/settings")
+def get_settings():
+    return jsonify(RecorderSettings.get_or_create().to_dict())
+
+
+@api_bp.put("/settings")
+def update_settings():
+    payload = request.get_json(silent=True) or {}
+    settings = RecorderSettings.get_or_create()
+
+    if "device_name" in payload:
+        settings.device_name = (payload.get("device_name") or "").strip() or None
+
+    if "device_index" in payload:
+        device_index = payload.get("device_index")
+        settings.device_index = None if device_index in ("", None) else int(device_index)
+
+    if "sample_rate" in payload:
+        settings.sample_rate = max(8000, int(payload["sample_rate"]))
+
+    if "channels" in payload:
+        settings.channels = max(1, min(2, int(payload["channels"])))
+
+    if "segment_seconds" in payload:
+        settings.segment_seconds = max(5, int(payload["segment_seconds"]))
+
+    if "min_event_duration_seconds" in payload:
+        settings.min_event_duration_seconds = max(0.05, float(payload["min_event_duration_seconds"]))
+
+    db.session.commit()
+    return jsonify(settings.to_dict())
+
+
+@api_bp.get("/schedules")
+def list_schedules():
+    items = RecordingSchedule.query.order_by(RecordingSchedule.name.asc()).all()
+    return jsonify({"items": [item.to_dict() for item in items]})
+
+
+def _upsert_schedule(schedule: RecordingSchedule, payload: dict[str, object]) -> RecordingSchedule:
+    name = str(payload.get("name", schedule.name or "")).strip()
+    if not name:
+        raise ValueError("Schedule name is required.")
+
+    days = payload.get("days_of_week")
+    if not isinstance(days, list) or not days:
+        raise ValueError("Select at least one weekday.")
+
+    start_time = str(payload.get("start_time", "")).strip()
+    end_time = str(payload.get("end_time", "")).strip()
+    if len(start_time) != 5 or len(end_time) != 5:
+        raise ValueError("Start and end times must use HH:MM format.")
+
+    schedule.name = name
+    schedule.set_days([int(item) for item in days])
+    schedule.start_time = start_time
+    schedule.end_time = end_time
+    schedule.enabled = bool(payload.get("enabled", True))
+    return schedule
+
+
+@api_bp.post("/schedules")
+def create_schedule():
+    payload = request.get_json(silent=True) or {}
+    schedule = RecordingSchedule()
+    try:
+        _upsert_schedule(schedule, payload)
+    except ValueError as exc:
+        return _json_error(str(exc))
+
+    db.session.add(schedule)
+    db.session.commit()
+    return jsonify(schedule.to_dict()), 201
+
+
+@api_bp.put("/schedules/<int:schedule_id>")
+def update_schedule(schedule_id: int):
+    schedule = RecordingSchedule.query.get_or_404(schedule_id)
+    payload = request.get_json(silent=True) or {}
+    try:
+        _upsert_schedule(schedule, payload)
+    except ValueError as exc:
+        return _json_error(str(exc))
+    db.session.commit()
+    return jsonify(schedule.to_dict())
+
+
+@api_bp.delete("/schedules/<int:schedule_id>")
+def delete_schedule(schedule_id: int):
+    schedule = RecordingSchedule.query.get_or_404(schedule_id)
+    db.session.delete(schedule)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@api_bp.get("/recordings")
+def list_recordings():
+    try:
+        end_at = parse_client_datetime(request.args.get("end")) or datetime.utcnow()
+        start_at = parse_client_datetime(request.args.get("start")) or (end_at - timedelta(days=7))
+    except ValueError as exc:
+        return _json_error(str(exc))
+
+    recordings = (
+        Recording.query.filter(Recording.started_at < end_at, Recording.ended_at > start_at)
+        .order_by(Recording.started_at.asc())
+        .all()
+    )
+    return jsonify(
+        {
+            "range": {
+                "start": start_at.replace(tzinfo=timezone.utc).isoformat(),
+                "end": end_at.replace(tzinfo=timezone.utc).isoformat(),
+            },
+            "items": [serialize_recording(item) for item in recordings],
+        }
+    )
+
+
+@api_bp.get("/recordings/<int:recording_id>/audio")
+def download_recording_audio(recording_id: int):
+    recording = Recording.query.get_or_404(recording_id)
+    file_path = Path(recording.file_path)
+    if not file_path.exists():
+        return _json_error("Audio file is missing on disk.", 404)
+    return send_file(file_path, as_attachment=True, download_name=file_path.name)
+
+
+@api_bp.get("/export")
+def export_recordings():
+    try:
+        end_at = parse_client_datetime(request.args.get("end"))
+        start_at = parse_client_datetime(request.args.get("start"))
+    except ValueError as exc:
+        return _json_error(str(exc))
+    if start_at is None or end_at is None:
+        return _json_error("Both start and end query parameters are required.")
+    if end_at <= start_at:
+        return _json_error("The end time must be after the start time.")
+
+    recordings = (
+        Recording.query.filter(Recording.started_at < end_at, Recording.ended_at > start_at)
+        .order_by(Recording.started_at.asc())
+        .all()
+    )
+    if not recordings:
+        return _json_error("No recordings overlap the selected time span.", 404)
+
+    exports_dir = Path(current_app.config["EXPORTS_DIR"])
+    exports_dir.mkdir(parents=True, exist_ok=True)
+
+    temp_file = tempfile.NamedTemporaryFile(
+        prefix="bird-monitor-export_",
+        suffix=".zip",
+        dir=exports_dir,
+        delete=False,
+    )
+    temp_file.close()
+
+    manifest_buffer = StringIO()
+    writer = csv.writer(manifest_buffer)
+    writer.writerow(
+        [
+            "recording_id",
+            "started_at_utc",
+            "ended_at_utc",
+            "file_name",
+            "bird_event_count",
+            "has_bird_activity",
+        ]
+    )
+
+    recordings_root = Path(current_app.config["RECORDINGS_DIR"]).resolve()
+
+    with zipfile.ZipFile(temp_file.name, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        for recording in recordings:
+            file_path = Path(recording.file_path)
+            if not file_path.exists():
+                continue
+            try:
+                archive_name = str(file_path.resolve().relative_to(recordings_root))
+            except ValueError:
+                archive_name = file_path.name
+            archive.write(file_path, arcname=archive_name)
+            writer.writerow(
+                [
+                    recording.id,
+                    recording.started_at.replace(tzinfo=timezone.utc).isoformat(),
+                    recording.ended_at.replace(tzinfo=timezone.utc).isoformat(),
+                    archive_name,
+                    recording.bird_event_count,
+                    recording.has_bird_activity,
+                ]
+            )
+
+        archive.writestr("manifest.csv", manifest_buffer.getvalue())
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            Path(temp_file.name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return response
+
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return send_file(
+        temp_file.name,
+        as_attachment=True,
+        download_name=f"bird-recordings-{timestamp}.zip",
+        mimetype="application/zip",
+    )
