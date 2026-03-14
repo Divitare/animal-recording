@@ -139,6 +139,14 @@ ensure_directories() {
   chmod 755 "${INSTALL_ROOT}" "${CURRENT_DIR}" "${DATA_DIR}" "${LOG_DIR}"
 }
 
+repair_runtime_permissions() {
+  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}" "${DATA_DIR}" "${LOG_DIR}"
+  find "${DATA_DIR}" -type d -exec chmod 755 {} +
+  find "${LOG_DIR}" -type d -exec chmod 755 {} +
+  find "${DATA_DIR}" -type f -exec chmod 664 {} +
+  find "${LOG_DIR}" -type f -exec chmod 664 {} +
+}
+
 generate_secret() {
   "${PYTHON_BIN}" - <<'PY'
 import secrets
@@ -271,14 +279,8 @@ install_species_runtime() {
 
 initialize_database() {
   log "Initializing database."
-  set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
-  set +a
-  (
-    cd "${CURRENT_DIR}"
-    BIRD_MONITOR_DISABLE_RECORDER=true "${VENV_DIR}/bin/python" -c "from bird_monitor.app import create_app; create_app()"
-  )
+  su -s /bin/bash -c "cd '${CURRENT_DIR}' && set -a && source '${ENV_FILE}' && set +a && BIRD_MONITOR_DISABLE_RECORDER=true '${VENV_DIR}/bin/python' -c \"from bird_monitor.app import create_app; create_app()\"" "${SERVICE_USER}"
+  repair_runtime_permissions
 }
 
 has_systemd() {
@@ -406,6 +408,7 @@ perform_install_or_update() {
   sync_source
   cleanup_source_checkout
   create_virtualenv
+  repair_runtime_permissions
   initialize_database
   start_service
   show_post_install_notes
