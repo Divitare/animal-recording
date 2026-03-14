@@ -4,6 +4,7 @@ set -Eeuo pipefail
 APP_NAME="bird-monitor"
 SERVICE_NAME="bird-monitor"
 SERVICE_USER="birdmonitor"
+REPO_URL="https://github.com/Divitare/animal-recording.git"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/bird-monitor}"
 CURRENT_DIR="${INSTALL_ROOT}/current"
 VENV_DIR="${INSTALL_ROOT}/.venv"
@@ -185,6 +186,10 @@ sync_source() {
 
   if [[ "${source_real}" == "${target_real}" ]]; then
     log "Installer is already running from ${CURRENT_DIR}; reusing the current source tree."
+    if [[ -d "${CURRENT_DIR}/.git" ]]; then
+      git -C "${CURRENT_DIR}" remote get-url origin >/dev/null 2>&1 || git -C "${CURRENT_DIR}" remote add origin "${REPO_URL}"
+      git -C "${CURRENT_DIR}" remote set-url origin "${REPO_URL}"
+    fi
     chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}"
     return
   fi
@@ -198,6 +203,11 @@ sync_source() {
     "${SCRIPT_DIR}/" "${CURRENT_DIR}/"
 
   chmod +x "${CURRENT_DIR}/install.sh" "${CURRENT_DIR}/run_server.sh"
+  if [[ -d "${SCRIPT_DIR}/.git" ]]; then
+    rsync -a "${SCRIPT_DIR}/.git/" "${CURRENT_DIR}/.git/"
+    git -C "${CURRENT_DIR}" remote get-url origin >/dev/null 2>&1 || git -C "${CURRENT_DIR}" remote add origin "${REPO_URL}"
+    git -C "${CURRENT_DIR}" remote set-url origin "${REPO_URL}"
+  fi
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}"
 }
 

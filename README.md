@@ -32,6 +32,12 @@ chmod +x install.sh
 ./install.sh
 ```
 
+Single-line command to clone the repo and run `install.sh`:
+
+```bash
+git clone https://github.com/Divitare/animal-recording.git && cd animal-recording && chmod +x install.sh && ./install.sh
+```
+
 The installer will:
 
 - elevate with `sudo` if needed
