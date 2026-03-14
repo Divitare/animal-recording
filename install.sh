@@ -14,33 +14,105 @@ ENV_FILE="${ENV_FILE:-/etc/bird-monitor.env}"
 SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 PID_FILE="${DATA_DIR}/${SERVICE_NAME}.pid"
 RUN_MODE_FILE="${INSTALL_ROOT}/.run-mode"
+COMMIT_FILE="${INSTALL_ROOT}/installed-commit.txt"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="${1:-auto}"
 PACKAGE_MANAGER=""
 PYTHON_BIN=""
 SOURCE_DIR=""
 SOURCE_IS_TEMP="false"
+INSTALL_LOG_DIR="${TMPDIR:-/tmp}/${APP_NAME}-logs"
+INSTALL_LOG_FILE=""
+CURRENT_STAGE="startup"
+SUMMARY_PRINTED="false"
+declare -a WARNING_LOG=()
+declare -a ERROR_LOG=()
 
 log() {
   printf '[%s] %s\n' "${APP_NAME}" "$*"
 }
 
 warn() {
+  WARNING_LOG+=("$*")
   printf '[%s] warning: %s\n' "${APP_NAME}" "$*" >&2
 }
 
 die() {
+  ERROR_LOG+=("$*")
   printf '[%s] error: %s\n' "${APP_NAME}" "$*" >&2
   exit 1
 }
 
-cleanup_on_error() {
-  local line_number="$1"
-  cleanup_source_checkout
-  warn "Installation failed near line ${line_number}."
+prepare_run_logging() {
+  if [[ -n "${INSTALL_LOG_FILE}" ]]; then
+    return
+  fi
+
+  mkdir -p "${INSTALL_LOG_DIR}"
+  INSTALL_LOG_FILE="${INSTALL_LOG_DIR}/${APP_NAME}-$(date +%Y%m%dT%H%M%S).log"
+  touch "${INSTALL_LOG_FILE}"
+  chmod 600 "${INSTALL_LOG_FILE}" || true
+  exec > >(tee -a "${INSTALL_LOG_FILE}") 2>&1
+  log "Detailed installer log: ${INSTALL_LOG_FILE}"
 }
 
-trap 'cleanup_on_error "${LINENO}"' ERR
+set_stage() {
+  CURRENT_STAGE="$*"
+  log "${CURRENT_STAGE}"
+}
+
+print_summary() {
+  local exit_code="$1"
+  if [[ "${SUMMARY_PRINTED}" == "true" ]]; then
+    return
+  fi
+
+  SUMMARY_PRINTED="true"
+
+  printf '\n[%s] ----- installation summary -----\n' "${APP_NAME}"
+  if [[ "${exit_code}" -eq 0 ]]; then
+    printf '[%s] result: success\n' "${APP_NAME}"
+  else
+    printf '[%s] result: failed\n' "${APP_NAME}"
+  fi
+  printf '[%s] action: %s\n' "${APP_NAME}" "${ACTION}"
+  printf '[%s] stage: %s\n' "${APP_NAME}" "${CURRENT_STAGE}"
+  if [[ -n "${INSTALL_LOG_FILE}" ]]; then
+    printf '[%s] log file: %s\n' "${APP_NAME}" "${INSTALL_LOG_FILE}"
+  fi
+  if [[ "${#WARNING_LOG[@]}" -gt 0 ]]; then
+    printf '[%s] warnings:\n' "${APP_NAME}"
+    for item in "${WARNING_LOG[@]}"; do
+      printf '  - %s\n' "${item}"
+    done
+  fi
+  if [[ "${#ERROR_LOG[@]}" -gt 0 ]]; then
+    printf '[%s] errors:\n' "${APP_NAME}"
+    for item in "${ERROR_LOG[@]}"; do
+      printf '  - %s\n' "${item}"
+    done
+  fi
+}
+
+cleanup_on_error() {
+  local line_number="$1"
+  local failed_command="$2"
+  local exit_code="$3"
+  cleanup_source_checkout
+  ERROR_LOG+=("Command failed at line ${line_number}: ${failed_command}")
+  ERROR_LOG+=("Exit code: ${exit_code}")
+  print_summary "${exit_code}"
+  exit "${exit_code}"
+}
+
+finalize_install() {
+  local exit_code="$?"
+  cleanup_source_checkout
+  print_summary "${exit_code}"
+}
+
+trap 'cleanup_on_error "${LINENO}" "${BASH_COMMAND}" "$?"' ERR
+trap 'finalize_install' EXIT
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
@@ -155,6 +227,7 @@ PY
 }
 
 ensure_env_file() {
+  set_stage "Ensuring environment configuration"
   mkdir -p "$(dirname "${ENV_FILE}")"
   if [[ ! -f "${ENV_FILE}" ]]; then
     log "Creating ${ENV_FILE}."
@@ -197,9 +270,9 @@ EOF
 }
 
 prepare_source_checkout() {
+  set_stage "Downloading latest source code"
   SOURCE_DIR="$(mktemp -d)"
   SOURCE_IS_TEMP="true"
-  log "Downloading the latest application source from ${REPO_URL}."
   if ! git clone --depth 1 "${REPO_URL}" "${SOURCE_DIR}"; then
     cleanup_source_checkout
     die "Could not download the latest code from ${REPO_URL}. Check git and network access."
@@ -215,7 +288,7 @@ cleanup_source_checkout() {
 }
 
 sync_source() {
-  log "Copying application files into ${CURRENT_DIR}."
+  set_stage "Copying application files into ${CURRENT_DIR}"
   if [[ -z "${SOURCE_DIR}" ]] || [[ ! -d "${SOURCE_DIR}" ]]; then
     die "No downloaded source tree is available."
   fi
@@ -234,12 +307,14 @@ sync_source() {
   if [[ -d "${SOURCE_DIR}/.git" ]]; then
     mkdir -p "${CURRENT_DIR}/.git"
     rsync -a --delete "${SOURCE_DIR}/.git/" "${CURRENT_DIR}/.git/"
+    git -C "${SOURCE_DIR}" rev-parse --short HEAD > "${COMMIT_FILE}" 2>/dev/null || true
+    chmod 644 "${COMMIT_FILE}" 2>/dev/null || true
   fi
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}"
 }
 
 create_virtualenv() {
-  log "Creating Python virtual environment."
+  set_stage "Creating Python virtual environment"
   rm -rf "${VENV_DIR}"
   "${PYTHON_BIN}" -m venv "${VENV_DIR}"
   "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
@@ -248,6 +323,7 @@ create_virtualenv() {
 }
 
 install_species_runtime() {
+  set_stage "Installing optional BirdNET runtime dependencies"
   if "${VENV_DIR}/bin/python" -c "import birdnetlib, librosa" >/dev/null 2>&1; then
     log "BirdNET Python packages are available."
   elif "${VENV_DIR}/bin/pip" install birdnetlib librosa; then
@@ -276,7 +352,7 @@ install_species_runtime() {
 }
 
 initialize_database() {
-  log "Initializing database."
+  set_stage "Initializing application database"
   su -s /bin/bash -c "cd '${CURRENT_DIR}' && set -a && source '${ENV_FILE}' && set +a && BIRD_MONITOR_DISABLE_RECORDER=true '${VENV_DIR}/bin/python' -c \"from bird_monitor.app import create_app; create_app()\"" "${SERVICE_USER}"
   repair_runtime_permissions
 }
@@ -286,7 +362,7 @@ has_systemd() {
 }
 
 write_systemd_unit() {
-  log "Installing systemd service unit."
+  set_stage "Installing systemd service unit"
   sed \
     -e "s|__SERVICE_USER__|${SERVICE_USER}|g" \
     -e "s|__INSTALL_ROOT__|${INSTALL_ROOT}|g" \
@@ -312,6 +388,7 @@ stop_process_if_running() {
 
 start_service() {
   if has_systemd; then
+    set_stage "Starting systemd service"
     write_systemd_unit
     echo "systemd" > "${RUN_MODE_FILE}"
     systemctl daemon-reload
@@ -319,7 +396,7 @@ start_service() {
     return
   fi
 
-  log "systemd not found. Starting the server with nohup instead."
+  set_stage "Starting server with nohup fallback"
   echo "nohup" > "${RUN_MODE_FILE}"
   touch "${LOG_DIR}/server.log"
   chown "${SERVICE_USER}:${SERVICE_USER}" "${LOG_DIR}/server.log"
@@ -339,6 +416,7 @@ remove_service_user() {
 }
 
 uninstall_everything() {
+  set_stage "Removing Bird Monitor installation"
   confirm_uninstall
   stop_process_if_running
 
@@ -382,9 +460,13 @@ choose_action_if_needed() {
 }
 
 show_post_install_notes() {
+  set_stage "Finalizing installation"
   local port
   port="$(grep '^BIRD_MONITOR_PORT=' "${ENV_FILE}" | tail -n1 | cut -d= -f2-)"
   log "Server is up. Open http://$(hostname -f 2>/dev/null || hostname):${port:-8080}"
+  if [[ -f "${COMMIT_FILE}" ]]; then
+    log "Installed commit: $(cat "${COMMIT_FILE}")"
+  fi
   log "Open /settings in the web interface to configure the microphone, BirdNET species analysis, and recording schedules."
   log "Re-running install.sh will now download the latest code directly from ${REPO_URL} for updates."
   if [[ -f "${RUN_MODE_FILE}" ]] && [[ "$(cat "${RUN_MODE_FILE}")" == "nohup" ]]; then
@@ -395,17 +477,24 @@ show_post_install_notes() {
 }
 
 perform_install_or_update() {
+  set_stage "Detecting package manager"
   detect_package_manager
+  set_stage "Installing required system packages"
   install_system_packages
+  set_stage "Resolving Python runtime"
   resolve_python
+  set_stage "Ensuring service user exists"
   ensure_service_user
+  set_stage "Ensuring runtime directories exist"
   ensure_directories
   ensure_env_file
+  set_stage "Stopping existing service"
   stop_process_if_running
   prepare_source_checkout
   sync_source
   cleanup_source_checkout
   create_virtualenv
+  set_stage "Repairing runtime permissions"
   repair_runtime_permissions
   initialize_database
   start_service
@@ -414,6 +503,8 @@ perform_install_or_update() {
 
 main() {
   require_root "$@"
+  prepare_run_logging
+  set_stage "Determining requested action"
   choose_action_if_needed
 
   case "${ACTION}" in

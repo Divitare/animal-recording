@@ -42,6 +42,12 @@ Single-line command to clone the repo and run `install.sh`:
 git clone https://github.com/Divitare/animal-recording.git && cd animal-recording && chmod +x install.sh && ./install.sh
 ```
 
+Recommended update command from a fresh checkout:
+
+```bash
+cd /root && rm -rf animal-recording-update && git clone https://github.com/Divitare/animal-recording.git animal-recording-update && cd animal-recording-update && chmod +x install.sh && ./install.sh update
+```
+
 The installer will:
 
 - elevate with `sudo` if needed
@@ -55,6 +61,8 @@ The installer will:
 
 If it finds an existing installation, it will offer to update it or completely uninstall it.
 Updates are downloaded from `https://github.com/Divitare/animal-recording.git`, so re-running `install.sh` pulls the latest server code instead of only reusing the current local copy.
+The installer now writes a detailed log file under `/tmp/bird-monitor-logs` and prints a summary with warnings and failing commands at the end of each install or update run.
+It also records the deployed Git commit in `/opt/bird-monitor/installed-commit.txt` for quick verification after an update.
 
 ## Notes
 

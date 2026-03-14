@@ -116,6 +116,9 @@ def update_settings():
         if "longitude" in payload:
             longitude = payload.get("longitude")
             settings.longitude = None if longitude in ("", None) else float(longitude)
+
+        if "species_min_confidence" in payload:
+            settings.species_min_confidence = min(0.99, max(0.05, float(payload["species_min_confidence"])))
     except (TypeError, ValueError) as exc:
         return _json_error(f"Invalid settings value: {exc}")
 
@@ -133,9 +136,6 @@ def update_settings():
         if provider not in {"disabled", "birdnet"}:
             return _json_error("Unknown species analysis provider.")
         settings.species_provider = provider
-
-    if "species_min_confidence" in payload:
-        settings.species_min_confidence = min(0.99, max(0.05, float(payload["species_min_confidence"])))
 
     try:
         resolved_index, _ = resolve_input_device(settings.device_name, settings.device_index)
