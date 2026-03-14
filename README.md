@@ -5,6 +5,8 @@ Bird Monitor is a Flask-based USB microphone recorder for bird sound monitoring.
 ## What it does
 
 - Records from a USB microphone during predefined schedule windows
+- Lets you manually start and stop recording from the browser
+- Shows the live microphone waveform and current recorder activity
 - Stores each recording segment as a WAV file and tracks metadata in SQLite
 - Detects likely bird activity inside each segment and marks those moments in the timeline
 - Shows past recordings in a continuous day-by-day web timeline

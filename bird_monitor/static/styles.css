@@ -8,8 +8,9 @@
   --accent: #1f6b45;
   --accent-soft: rgba(31, 107, 69, 0.15);
   --bird: #f07a28;
-  --bird-soft: rgba(240, 122, 40, 0.2);
+  --bird-soft: rgba(240, 122, 40, 0.22);
   --danger: #a63a2b;
+  --danger-soft: rgba(166, 58, 43, 0.14);
   --shadow: 0 16px 40px rgba(70, 54, 33, 0.12);
 }
 
@@ -33,9 +34,34 @@ body {
   padding: 32px 20px 48px;
 }
 
+.top-nav {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.nav-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.nav-link.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 1.2fr);
   gap: 20px;
   align-items: start;
   margin-bottom: 24px;
@@ -58,7 +84,7 @@ h2 {
 h1 {
   font-size: clamp(2rem, 4vw, 3.2rem);
   line-height: 1.02;
-  max-width: 12ch;
+  max-width: 14ch;
 }
 
 .lede,
@@ -92,6 +118,12 @@ h1 {
   padding: 20px;
 }
 
+.activity-card {
+  background:
+    linear-gradient(180deg, rgba(255, 249, 235, 0.95), rgba(248, 242, 229, 0.92)),
+    radial-gradient(circle at top right, rgba(31, 107, 69, 0.12), transparent 30%);
+}
+
 .controls-panel,
 .settings-panel,
 .schedule-panel {
@@ -102,12 +134,44 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.settings-hero {
+  grid-template-columns: 1fr;
+}
+
+.controls-panel-wide {
+  grid-column: span 6;
+}
+
+.settings-panel-wide {
+  grid-column: span 6;
+}
+
 .panel-head {
   display: flex;
   justify-content: space-between;
   align-items: start;
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.activity-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+.manual-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.manual-actions button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .status-pill {
@@ -117,12 +181,82 @@ h1 {
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .status-pill.is-recording {
   background: var(--bird-soft);
   color: #9a4f18;
+}
+
+.status-pill.is-manual {
+  background: rgba(39, 90, 114, 0.14);
+  color: #275a72;
+}
+
+.activity-banner {
+  margin-top: 16px;
+  padding: 18px 18px 16px;
+  border-radius: 22px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.8), rgba(255, 244, 219, 0.9));
+  border: 1px solid rgba(76, 58, 39, 0.1);
+}
+
+.activity-label {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+
+.activity-banner h2 {
+  font-size: clamp(1.25rem, 2vw, 1.75rem);
+  line-height: 1.1;
+}
+
+.activity-subline {
+  margin: 8px 0 0;
+  min-height: 22px;
+}
+
+.wave-panel {
+  margin-top: 16px;
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+#waveform-canvas {
+  width: 100%;
+  height: 150px;
+  display: block;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(14, 50, 38, 0.04), rgba(31, 107, 69, 0.08)),
+    linear-gradient(90deg, rgba(76, 58, 39, 0.05) 1px, transparent 1px);
+  background-size: auto, calc(100% / 24) 100%;
+}
+
+.wave-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.level-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .status-grid {
@@ -193,7 +327,7 @@ button {
   background: var(--accent);
   color: white;
   cursor: pointer;
-  transition: transform 140ms ease, opacity 140ms ease;
+  transition: transform 140ms ease, opacity 140ms ease, background 140ms ease;
 }
 
 button:hover {
@@ -203,6 +337,11 @@ button:hover {
 .secondary-button {
   background: rgba(47, 36, 23, 0.1);
   color: var(--text);
+}
+
+.danger-button {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .checkbox-row {
@@ -271,11 +410,6 @@ button:hover {
 .schedule-actions button {
   min-height: 36px;
   padding: 0 12px;
-}
-
-.danger-button {
-  background: rgba(166, 58, 43, 0.12);
-  color: var(--danger);
 }
 
 .timeline-days {
@@ -382,7 +516,9 @@ button:hover {
   }
 
   .controls-panel,
+  .controls-panel-wide,
   .settings-panel,
+  .settings-panel-wide,
   .schedule-panel,
   .timeline-panel {
     grid-column: auto;
@@ -395,7 +531,19 @@ button:hover {
   }
 
   .button-row,
-  .time-row {
+  .time-row,
+  .activity-top {
+    grid-template-columns: 1fr;
+  }
+
+  .activity-top,
+  .wave-meta,
+  .manual-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .status-grid {
     grid-template-columns: 1fr;
   }
 }

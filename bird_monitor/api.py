@@ -9,7 +9,7 @@ from pathlib import Path
 
 from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, url_for
 
-from .audio import list_input_devices
+from .audio import input_setting_supported, list_input_devices, resolve_input_device
 from .extensions import db
 from .models import BirdDetection, RecorderSettings, Recording, RecordingSchedule
 from .services import get_background_manager
@@ -57,6 +57,16 @@ def status():
     )
 
 
+@api_bp.get("/live")
+def live_status():
+    manager = get_background_manager()
+    return jsonify(
+        {
+            "service": manager.get_status(include_devices=False) if manager else {"started": False, "is_recording": False},
+        }
+    )
+
+
 @api_bp.get("/devices")
 def devices():
     try:
@@ -95,8 +105,36 @@ def update_settings():
     if "min_event_duration_seconds" in payload:
         settings.min_event_duration_seconds = max(0.05, float(payload["min_event_duration_seconds"]))
 
+    try:
+        resolved_index, _ = resolve_input_device(settings.device_name, settings.device_index)
+    except RuntimeError as exc:
+        return _json_error(str(exc))
+
+    if not input_setting_supported(resolved_index, settings.sample_rate, settings.channels):
+        return _json_error(
+            f"The selected microphone does not support {settings.sample_rate} Hz with {settings.channels} channel(s)."
+        )
+
     db.session.commit()
     return jsonify(settings.to_dict())
+
+
+@api_bp.post("/manual-recording/start")
+def start_manual_recording():
+    manager = get_background_manager()
+    if manager is None:
+        return _json_error("The recorder service is disabled.", 503)
+    manager.request_manual_start()
+    return jsonify({"service": manager.get_status(include_devices=False)})
+
+
+@api_bp.post("/manual-recording/stop")
+def stop_manual_recording():
+    manager = get_background_manager()
+    if manager is None:
+        return _json_error("The recorder service is disabled.", 503)
+    manager.request_manual_stop()
+    return jsonify({"service": manager.get_status(include_devices=False)})
 
 
 @api_bp.get("/schedules")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,10 @@ except Exception as exc:  # pragma: no cover - depends on system audio libs
     AUDIO_IMPORT_ERROR = exc
 else:
     AUDIO_IMPORT_ERROR = None
+
+ChunkCallback = Callable[[np.ndarray], None]
+StopCallback = Callable[[], bool]
+COMMON_SAMPLE_RATES = [8000, 16000, 22050, 32000, 44100, 48000, 96000]
 
 
 def ensure_audio_runtime() -> None:
@@ -40,15 +45,61 @@ def list_input_devices() -> list[dict[str, object]]:
         max_input_channels = int(device["max_input_channels"])
         if max_input_channels <= 0:
             continue
+        compatibility = compatible_input_settings(index, max_input_channels, int(float(device["default_samplerate"])))
         items.append(
             {
                 "index": index,
                 "name": str(device["name"]),
                 "max_input_channels": max_input_channels,
                 "default_samplerate": int(float(device["default_samplerate"])),
+                "supported_sample_rates": compatibility["sample_rates"],
+                "supported_channels": compatibility["channels"],
             }
         )
     return items
+
+
+def input_setting_supported(device_index: int, sample_rate: int, channels: int) -> bool:
+    ensure_audio_runtime()
+    try:
+        sd.check_input_settings(device=device_index, samplerate=sample_rate, channels=channels)
+    except Exception:
+        return False
+    return True
+
+
+def compatible_input_settings(
+    device_index: int,
+    max_input_channels: int,
+    default_sample_rate: int | None = None,
+) -> dict[str, list[int]]:
+    ensure_audio_runtime()
+
+    candidate_rates = list(COMMON_SAMPLE_RATES)
+    if default_sample_rate is not None and default_sample_rate not in candidate_rates:
+        candidate_rates.insert(0, default_sample_rate)
+
+    candidate_channels = list(range(1, min(max_input_channels, 2) + 1))
+    supported_rates: list[int] = []
+    supported_channels: list[int] = []
+
+    for channel in candidate_channels:
+        if any(input_setting_supported(device_index, rate, channel) for rate in candidate_rates):
+            supported_channels.append(channel)
+
+    for rate in candidate_rates:
+        if any(input_setting_supported(device_index, rate, channel) for channel in candidate_channels):
+            supported_rates.append(rate)
+
+    if not supported_rates and default_sample_rate is not None and input_setting_supported(device_index, default_sample_rate, 1):
+        supported_rates.append(default_sample_rate)
+    if not supported_channels and input_setting_supported(device_index, default_sample_rate or 44100, 1):
+        supported_channels.append(1)
+
+    return {
+        "sample_rates": supported_rates,
+        "channels": supported_channels,
+    }
 
 
 def resolve_input_device(preferred_name: str | None, preferred_index: int | None) -> tuple[int, str]:
@@ -87,20 +138,55 @@ def record_segment(
     channels: int,
     preferred_name: str | None = None,
     preferred_index: int | None = None,
+    on_chunk: ChunkCallback | None = None,
+    should_stop: StopCallback | None = None,
+    chunk_seconds: float = 0.12,
 ) -> AudioCapture:
     ensure_audio_runtime()
     device_index, device_name = resolve_input_device(preferred_name, preferred_index)
-    frame_count = max(1, int(duration_seconds * sample_rate))
-    samples = sd.rec(
-        frame_count,
+    target_frames = max(1, int(duration_seconds * sample_rate))
+    block_size = max(256, int(sample_rate * chunk_seconds))
+    chunks: list[np.ndarray] = []
+    captured_frames = 0
+
+    with sd.InputStream(
         samplerate=sample_rate,
         channels=channels,
         dtype="float32",
         device=device_index,
-        blocking=True,
-    )
+        blocksize=block_size,
+        latency="low",
+    ) as stream:
+        while captured_frames < target_frames:
+            if should_stop is not None and should_stop():
+                break
+
+            frames_to_read = min(block_size, target_frames - captured_frames)
+            chunk, overflowed = stream.read(frames_to_read)
+            if overflowed:
+                # Keep the recording and waveform flowing even if the system reports an overrun.
+                pass
+
+            chunk_array = np.asarray(chunk, dtype=np.float32)
+            if chunk_array.size == 0:
+                continue
+
+            chunks.append(chunk_array.copy())
+            captured_frames += int(chunk_array.shape[0])
+
+            if on_chunk is not None:
+                on_chunk(chunk_array)
+
+            if should_stop is not None and should_stop():
+                break
+
+    if chunks:
+        samples = np.concatenate(chunks, axis=0)
+    else:
+        samples = np.zeros((0, channels), dtype=np.float32)
+
     return AudioCapture(
-        samples=np.asarray(samples, dtype=np.float32),
+        samples=samples,
         sample_rate=sample_rate,
         channels=channels,
         device_index=device_index,

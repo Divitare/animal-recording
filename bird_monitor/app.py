@@ -51,6 +51,10 @@ def create_app() -> Flask:
     def index():
         return render_template("index.html")
 
+    @app.get("/settings")
+    def settings_page():
+        return render_template("settings.html")
+
     with app.app_context():
         db.create_all()
         RecorderSettings.get_or_create()

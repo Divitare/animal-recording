@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import atexit
 import threading
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 from flask import Flask
 
 from .audio import list_input_devices, peak_amplitude, record_segment, save_capture
@@ -21,15 +23,25 @@ class RecordingManager:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="bird-monitor-recorder", daemon=True)
         self._status_lock = threading.Lock()
+        self._manual_lock = threading.Lock()
+        self._waveform_lock = threading.Lock()
         self._species_classifier = build_species_classifier()
+        self._manual_mode = False
+        self._manual_stop_requested = False
+        self._waveform_samples: deque[float] = deque([0.0] * 120, maxlen=180)
         self._status: dict[str, object] = {
             "started": False,
             "is_recording": False,
+            "manual_mode": False,
             "last_error": None,
             "last_recording_at": None,
             "current_device_name": None,
             "active_schedule_names": [],
             "last_checked_at": None,
+            "segment_started_at": None,
+            "activity_reason": "idle",
+            "activity_message": "Waiting for the first schedule or a manual start.",
+            "live_level": 0.0,
             "species_provider": getattr(self._species_classifier, "provider_name", "disabled"),
             "species_enabled": self._species_classifier.available(),
         }
@@ -45,18 +57,86 @@ class RecordingManager:
         if self._thread.is_alive():
             self._thread.join(timeout=5)
 
-    def get_status(self) -> dict[str, object]:
+    def request_manual_start(self) -> None:
+        with self._manual_lock:
+            self._manual_mode = True
+            self._manual_stop_requested = False
+        self._set_status(
+            manual_mode=True,
+            activity_reason="manual-armed",
+            activity_message="Manual recording requested. The next segment will start immediately.",
+            last_error=None,
+        )
+
+    def request_manual_stop(self) -> None:
+        with self._manual_lock:
+            self._manual_mode = False
+            self._manual_stop_requested = True
+        self._set_status(
+            manual_mode=False,
+            activity_message="Stopping manual recording...",
+        )
+
+    def get_status(self, include_devices: bool = True) -> dict[str, object]:
         with self._status_lock:
             data = dict(self._status)
-        try:
-            data["available_devices"] = list_input_devices()
-        except Exception:
-            data["available_devices"] = []
+        with self._waveform_lock:
+            data["waveform_samples"] = list(self._waveform_samples)
+        if include_devices:
+            try:
+                data["available_devices"] = list_input_devices()
+            except Exception:
+                data["available_devices"] = []
         return data
 
     def _set_status(self, **values: object) -> None:
         with self._status_lock:
             self._status.update(values)
+
+    def _manual_requested(self) -> bool:
+        with self._manual_lock:
+            return self._manual_mode
+
+    def _manual_stop_is_requested(self) -> bool:
+        with self._manual_lock:
+            return self._manual_stop_requested
+
+    def _clear_manual_stop(self) -> None:
+        with self._manual_lock:
+            self._manual_stop_requested = False
+
+    def _reset_waveform(self) -> None:
+        with self._waveform_lock:
+            self._waveform_samples.clear()
+            self._waveform_samples.extend([0.0] * 120)
+        self._set_status(live_level=0.0)
+
+    def _append_waveform(self, chunk: np.ndarray) -> None:
+        mono = chunk.astype(np.float32)
+        if mono.ndim > 1:
+            mono = np.mean(mono, axis=1)
+
+        amplitudes = np.abs(mono)
+        bucket_count = min(24, max(1, int(amplitudes.size / 256) or 1))
+        buckets = np.array_split(amplitudes, bucket_count)
+        values = [
+            float(np.clip(np.mean(bucket) * 7.5, 0.0, 1.0))
+            for bucket in buckets
+            if bucket.size > 0
+        ]
+
+        if not values:
+            return
+
+        with self._waveform_lock:
+            self._waveform_samples.extend(values)
+
+        self._set_status(live_level=max(values))
+
+    def _recording_should_stop(self, mode: str) -> bool:
+        if self._stop_event.is_set():
+            return True
+        return mode == "manual" and self._manual_stop_is_requested()
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -65,27 +145,44 @@ class RecordingManager:
                 local_now = datetime.now().astimezone()
                 schedules = RecordingSchedule.query.filter_by(enabled=True).all()
                 active_windows = get_active_windows(schedules, local_now)
+                manual_mode = self._manual_requested()
 
-                if not active_windows:
+                if not manual_mode and not active_windows:
+                    self._reset_waveform()
                     self._set_status(
                         is_recording=False,
+                        manual_mode=False,
                         active_schedule_names=[],
+                        activity_reason="idle",
+                        activity_message="Idle. Waiting for a schedule or a manual start.",
+                        segment_started_at=None,
                         last_checked_at=utc_iso(datetime.utcnow()),
                     )
-                    self._stop_event.wait(5)
+                    if self._stop_event.wait(1):
+                        break
                     continue
 
                 active_schedule_names = [window.schedule.name for window in active_windows]
-                seconds_until_boundary = min(
-                    max(1, int((window.ends_at - local_now).total_seconds()))
-                    for window in active_windows
-                )
-                segment_seconds = max(1, min(settings.segment_seconds, seconds_until_boundary))
-                started_at = datetime.utcnow()
+                capture_mode = "manual" if manual_mode else "schedule"
+                if capture_mode == "manual":
+                    segment_seconds = max(1, settings.segment_seconds)
+                    activity_message = "Manual recording is active."
+                else:
+                    seconds_until_boundary = min(
+                        max(1, int((window.ends_at - local_now).total_seconds()))
+                        for window in active_windows
+                    )
+                    segment_seconds = max(1, min(settings.segment_seconds, seconds_until_boundary))
+                    activity_message = f"Scheduled recording is active: {', '.join(active_schedule_names)}"
 
+                started_at = datetime.utcnow()
                 self._set_status(
                     is_recording=True,
+                    manual_mode=manual_mode,
                     active_schedule_names=active_schedule_names,
+                    activity_reason=capture_mode,
+                    activity_message=activity_message,
+                    segment_started_at=utc_iso(started_at),
                     last_error=None,
                     last_checked_at=utc_iso(started_at),
                 )
@@ -97,8 +194,35 @@ class RecordingManager:
                         channels=settings.channels,
                         preferred_name=settings.device_name,
                         preferred_index=settings.device_index,
+                        on_chunk=self._append_waveform,
+                        should_stop=lambda: self._recording_should_stop(capture_mode),
                     )
                     ended_at = datetime.utcnow()
+
+                    if capture.samples.size == 0:
+                        self._clear_manual_stop()
+                        next_manual_mode = self._manual_requested()
+                        next_reason = "manual-armed" if next_manual_mode else ("schedule" if active_schedule_names else "idle")
+                        self._set_status(
+                            is_recording=False,
+                            manual_mode=next_manual_mode,
+                            activity_reason=next_reason,
+                            activity_message=(
+                                "Manual recording is armed and waiting for the next segment."
+                                if next_manual_mode
+                                else (
+                                    "Scheduled window remains active. The next segment will start shortly."
+                                    if active_schedule_names
+                                    else "Recording stopped before any audio was captured."
+                                )
+                            ),
+                            segment_started_at=None,
+                            last_checked_at=utc_iso(ended_at),
+                        )
+                        if self._stop_event.wait(1):
+                            break
+                        continue
+
                     file_path = self._build_recording_path(started_at)
                     save_capture(capture, file_path)
 
@@ -145,20 +269,45 @@ class RecordingManager:
                         )
 
                     db.session.commit()
+                    self._clear_manual_stop()
+
+                    manual_still_requested = self._manual_requested()
+                    next_reason = "manual-armed" if manual_still_requested else ("schedule" if active_schedule_names else "idle")
                     self._set_status(
                         is_recording=False,
+                        manual_mode=manual_still_requested,
                         current_device_name=capture.device_name,
                         last_recording_at=utc_iso(ended_at),
+                        activity_reason=next_reason,
+                        activity_message=(
+                            "Manual recording will continue with the next segment."
+                            if manual_still_requested
+                            else (
+                                "Scheduled window is still active. The next segment starts soon."
+                                if active_schedule_names
+                                else "Waiting for the next schedule or manual start."
+                            )
+                        ),
+                        segment_started_at=None,
                         last_error=None,
                     )
                 except Exception as exc:
                     db.session.rollback()
                     self.app.logger.exception("Recording loop failed")
-                    self._set_status(is_recording=False, last_error=str(exc))
-                    self._stop_event.wait(5)
+                    self._set_status(
+                        is_recording=False,
+                        manual_mode=self._manual_requested(),
+                        activity_reason="idle",
+                        activity_message="Recorder error. Check the message below.",
+                        segment_started_at=None,
+                        last_error=str(exc),
+                    )
+                    if self._stop_event.wait(2):
+                        break
                     continue
 
-            self._stop_event.wait(1)
+            if self._stop_event.wait(0.5):
+                break
 
     def _build_recording_path(self, started_at: datetime) -> Path:
         root = Path(self.app.config["RECORDINGS_DIR"])

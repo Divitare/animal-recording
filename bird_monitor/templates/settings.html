@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bird Monitor Settings</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <div class="page-shell">
+      <nav class="top-nav">
+        <a class="nav-link" href="/">Dashboard</a>
+        <a class="nav-link is-active" href="/settings">Settings</a>
+      </nav>
+
+      <header class="hero settings-hero">
+        <div>
+          <p class="eyebrow">Settings</p>
+          <h1>Recorder compatibility and schedule configuration</h1>
+          <p class="lede">
+            Pick only microphone-safe sample rates and channel counts, then manage the automatic recording windows here.
+          </p>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel settings-panel settings-panel-wide">
+          <div class="panel-head">
+            <h2>Recorder Settings</h2>
+          </div>
+          <form id="settings-form" class="stack-form">
+            <label>
+              Microphone
+              <select id="device-index"></select>
+            </label>
+            <label>
+              Fallback name filter
+              <input type="text" id="device-name" placeholder="Optional USB mic name fragment">
+            </label>
+            <label>
+              Compatible sample rate
+              <select id="sample-rate"></select>
+            </label>
+            <label>
+              Compatible channels
+              <select id="channels"></select>
+            </label>
+            <label>
+              Segment length (seconds)
+              <input type="number" id="segment-seconds" min="5" step="5">
+            </label>
+            <label>
+              Minimum bird marker length (seconds)
+              <input type="number" id="min-event-duration" min="0.05" step="0.05">
+            </label>
+            <button type="submit">Save recorder settings</button>
+          </form>
+          <p class="panel-copy" id="devices-note"></p>
+        </section>
+
+        <section class="panel schedule-panel settings-panel-wide">
+          <div class="panel-head">
+            <h2>Recording Schedules</h2>
+          </div>
+          <form id="schedule-form" class="stack-form">
+            <label>
+              Name
+              <input type="text" id="schedule-name" placeholder="Morning chorus" required>
+            </label>
+            <div class="weekday-picker" id="weekday-picker"></div>
+            <div class="time-row">
+              <label>
+                Start
+                <input type="time" id="schedule-start" required>
+              </label>
+              <label>
+                End
+                <input type="time" id="schedule-end" required>
+              </label>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="schedule-enabled" checked>
+              Enabled
+            </label>
+            <button type="submit">Add schedule</button>
+          </form>
+          <div class="schedule-list" id="schedule-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='settings.js') }}" defer></script>
+  </body>
+</html>
