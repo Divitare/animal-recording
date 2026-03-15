@@ -250,6 +250,16 @@ def rewrite_audio_file(source_path: Path, target_path: Path) -> dict[str, object
     return describe_audio_file(target_path)
 
 
+def load_audio_samples(source_path: Path, *, mono: bool = True) -> tuple[np.ndarray, int]:
+    ensure_audio_runtime()
+    samples, sample_rate = sf.read(source_path, dtype="float32", always_2d=False)
+    prepared = _prepare_audio_for_wav(samples)
+    if mono and prepared.ndim == 2:
+        prepared = np.mean(prepared, axis=1, dtype=np.float32)
+        prepared = np.ascontiguousarray(prepared)
+    return prepared, int(sample_rate)
+
+
 def _write_standard_wav(target_path: Path, samples: np.ndarray, sample_rate: int) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     prepared_samples = _prepare_audio_for_wav(samples)

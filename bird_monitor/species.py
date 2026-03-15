@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .audio import describe_audio_file, rewrite_audio_file
+import numpy as np
+
+from .audio import describe_audio_file, load_audio_samples, rewrite_audio_file
 from .detection import BirdActivityEvent
 from .runtime_logging import get_birdnet_logger
 
@@ -75,8 +77,13 @@ class BirdNetSpeciesClassifier:
         }
         from birdnetlib import Recording
         from birdnetlib.analyzer import Analyzer
+        try:
+            from birdnetlib import RecordingBuffer
+        except Exception:
+            RecordingBuffer = None
 
         self._recording_cls = Recording
+        self._recording_buffer_cls = RecordingBuffer
         self._analyzer = Analyzer()
         self._min_confidence = float(os.getenv("BIRD_MONITOR_SPECIES_MIN_CONFIDENCE", "0.35"))
         self.runtime_details = _collect_runtime_details(
@@ -86,13 +93,14 @@ class BirdNetSpeciesClassifier:
         )
         packages = self.runtime_details.get("packages", {})
         self._logger.info(
-            "BirdNET runtime ready. backend=%s birdnetlib=%s librosa=%s tensorflow=%s tflite-runtime=%s min_confidence=%.2f",
+            "BirdNET runtime ready. backend=%s birdnetlib=%s librosa=%s tensorflow=%s tflite-runtime=%s min_confidence=%.2f buffer_fallback=%s",
             self.runtime_details.get("runtime_backend", "unknown"),
             packages.get("birdnetlib") or "missing",
             packages.get("librosa") or "missing",
             packages.get("tensorflow") or "missing",
             packages.get("tflite-runtime") or "missing",
             self._min_confidence,
+            self._recording_buffer_cls is not None,
         )
 
     def available(self) -> bool:
@@ -102,6 +110,35 @@ class BirdNetSpeciesClassifier:
         recording = self._recording_cls(self._analyzer, str(file_path), **kwargs)
         recording.analyze()
         return list(getattr(recording, "detections", []))
+
+    def _analyze_buffer_detections(
+        self,
+        samples: np.ndarray,
+        sample_rate: int,
+        kwargs: dict[str, object],
+    ) -> list[dict[str, object]]:
+        if self._recording_buffer_cls is None:
+            raise RuntimeError("birdnetlib does not expose RecordingBuffer in this runtime.")
+
+        attempts = [
+            lambda: self._recording_buffer_cls(self._analyzer, samples, sample_rate=sample_rate, **kwargs),
+            lambda: self._recording_buffer_cls(self._analyzer, samples, samplerate=sample_rate, **kwargs),
+            lambda: self._recording_buffer_cls(self._analyzer, samples, sr=sample_rate, **kwargs),
+            lambda: self._recording_buffer_cls(self._analyzer, samples, sample_rate, **kwargs),
+        ]
+        errors: list[str] = []
+        for attempt in attempts:
+            try:
+                recording = attempt()
+                recording.analyze()
+                return list(getattr(recording, "detections", []))
+            except TypeError as exc:
+                errors.append(str(exc))
+
+        raise RuntimeError(
+            "BirdNET in-memory buffer fallback could not be constructed. "
+            + " | ".join(errors[:3])
+        )
 
     def classify(
         self,
@@ -182,7 +219,24 @@ class BirdNetSpeciesClassifier:
                     fallback_details["size_bytes"],
                     fallback_details["path"],
                 )
-                raw_detections = self._analyze_detections(fallback_path, kwargs)
+                try:
+                    raw_detections = self._analyze_detections(fallback_path, kwargs)
+                except Exception as fallback_exc:
+                    if not _is_audio_format_error(fallback_exc):
+                        raise
+
+                    buffer_samples, buffer_sample_rate = load_audio_samples(fallback_path)
+                    self._logger.warning(
+                        "BirdNET could not read the fallback WAV directly either (%s). Trying in-memory buffer analysis with %s samples at %s Hz.",
+                        fallback_exc,
+                        int(buffer_samples.shape[0]),
+                        buffer_sample_rate,
+                    )
+                    raw_detections = self._analyze_buffer_detections(
+                        buffer_samples,
+                        buffer_sample_rate,
+                        kwargs,
+                    )
             finally:
                 if fallback_path is not None:
                     try:
