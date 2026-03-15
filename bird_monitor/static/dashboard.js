@@ -12,6 +12,7 @@ const dashboardState = {
   status: null,
   birdnetLogs: [],
   birdnetLogFile: null,
+  birdnetLogAutoFollow: true,
   livePollHandle: null,
   zoomFactor: 1,
   timelineDragPointerId: null,
@@ -169,6 +170,10 @@ function dashboardBindEvents() {
     } catch (error) {
       dashboardShowError(error);
     }
+  });
+
+  dashboardElements.birdnetLogConsole.addEventListener("scroll", () => {
+    dashboardState.birdnetLogAutoFollow = dashboardLogConsoleIsNearBottom();
   });
 
   dashboardElements.timelineScroll.addEventListener("wheel", (event) => {
@@ -501,10 +506,13 @@ function dashboardRenderBirdnetRuntime(service) {
 
 function dashboardRenderBirdnetLogs(payload) {
   const items = payload.items || [];
+  const previousDistanceFromBottom = dashboardLogConsoleDistanceFromBottom();
+  const shouldStickToBottom = dashboardState.birdnetLogAutoFollow || previousDistanceFromBottom <= 20;
   dashboardElements.birdnetLogConsole.innerHTML = "";
 
   if (!items.length) {
     dashboardElements.birdnetLogConsole.innerHTML = `<div class="birdnet-log-empty">No BirdNET log entries yet.</div>`;
+    dashboardState.birdnetLogAutoFollow = true;
     return;
   }
 
@@ -544,7 +552,18 @@ function dashboardRenderBirdnetLogs(payload) {
     dashboardElements.birdnetLogConsole.append(row);
   });
 
-  dashboardElements.birdnetLogConsole.scrollTop = dashboardElements.birdnetLogConsole.scrollHeight;
+  if (shouldStickToBottom) {
+    dashboardElements.birdnetLogConsole.scrollTop = dashboardElements.birdnetLogConsole.scrollHeight;
+    dashboardState.birdnetLogAutoFollow = true;
+    return;
+  }
+
+  dashboardElements.birdnetLogConsole.scrollTop = Math.max(
+    dashboardElements.birdnetLogConsole.scrollHeight
+      - dashboardElements.birdnetLogConsole.clientHeight
+      - previousDistanceFromBottom,
+    0,
+  );
 }
 
 function dashboardRenderWaveform(samples) {
@@ -940,6 +959,15 @@ function dashboardFormatLogTimestamp(value) {
     return "--:--:--";
   }
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function dashboardLogConsoleDistanceFromBottom() {
+  const element = dashboardElements.birdnetLogConsole;
+  return Math.max(element.scrollHeight - element.scrollTop - element.clientHeight, 0);
+}
+
+function dashboardLogConsoleIsNearBottom() {
+  return dashboardLogConsoleDistanceFromBottom() <= 20;
 }
 
 async function dashboardCopyLogEntry(item, button) {
