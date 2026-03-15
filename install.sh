@@ -15,6 +15,7 @@ SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 PID_FILE="${DATA_DIR}/${SERVICE_NAME}.pid"
 RUN_MODE_FILE="${INSTALL_ROOT}/.run-mode"
 COMMIT_FILE="${INSTALL_ROOT}/installed-commit.txt"
+RELEASE_COMMIT_FILE="${CURRENT_DIR}/.release-commit"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="${1:-auto}"
 PACKAGE_MANAGER=""
@@ -307,10 +308,24 @@ sync_source() {
 
   chmod +x "${CURRENT_DIR}/install.sh" "${CURRENT_DIR}/run_server.sh"
   if [[ -d "${SOURCE_DIR}/.git" ]]; then
+    local previous_commit=""
+    local source_commit=""
     mkdir -p "${CURRENT_DIR}/.git"
     rsync -a --delete "${SOURCE_DIR}/.git/" "${CURRENT_DIR}/.git/"
-    git -C "${SOURCE_DIR}" rev-parse --short HEAD > "${COMMIT_FILE}" 2>/dev/null || true
+    previous_commit="$(cat "${COMMIT_FILE}" 2>/dev/null || true)"
+    source_commit="$(git -C "${SOURCE_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+    if [[ -n "${source_commit}" ]]; then
+      printf '%s\n' "${source_commit}" > "${COMMIT_FILE}"
+      printf '%s\n' "${source_commit}" > "${RELEASE_COMMIT_FILE}"
+      if [[ -n "${previous_commit}" && "${previous_commit}" == "${source_commit}" ]]; then
+        log "Downloaded source commit matches the currently installed commit: ${source_commit}"
+      elif [[ -n "${previous_commit}" ]]; then
+        log "Updating installed commit from ${previous_commit} to ${source_commit}"
+      fi
+      log "Downloaded source commit: ${source_commit}"
+    fi
     chmod 644 "${COMMIT_FILE}" 2>/dev/null || true
+    chmod 644 "${RELEASE_COMMIT_FILE}" 2>/dev/null || true
   fi
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}"
 }
@@ -443,6 +458,39 @@ start_service() {
   su -s /bin/bash -c "cd '${CURRENT_DIR}' && set -a && source '${ENV_FILE}' && set +a && nohup ./run_server.sh >> '${LOG_DIR}/server.log' 2>&1 & echo \$! > '${PID_FILE}'" "${SERVICE_USER}"
 }
 
+read_env_value() {
+  local key="$1"
+  local file="$2"
+  grep "^${key}=" "${file}" | tail -n1 | cut -d= -f2-
+}
+
+verify_running_service() {
+  set_stage "Verifying running service version"
+  local port expected_commit response actual_commit attempt
+  port="$(read_env_value 'BIRD_MONITOR_PORT' "${ENV_FILE}")"
+  port="${port:-8080}"
+  expected_commit="$(cat "${RELEASE_COMMIT_FILE}" 2>/dev/null || true)"
+
+  for attempt in $(seq 1 25); do
+    response="$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/api/status" 2>/dev/null || true)"
+    if [[ -n "${response}" ]]; then
+      actual_commit="$(
+        RESPONSE_JSON="${response}" "${PYTHON_BIN}" -c "import json, os; payload=json.loads(os.environ['RESPONSE_JSON']); print(((payload.get('app') or {}).get('commit') or '').strip())"
+      )"
+      if [[ -z "${expected_commit}" || "${actual_commit}" == "${expected_commit}" ]]; then
+        log "Verified running server commit: ${actual_commit:-unknown}"
+        return
+      fi
+    fi
+    sleep 2
+  done
+
+  if [[ -n "${expected_commit}" ]]; then
+    die "The server did not come up on the expected commit ${expected_commit}. Check the installer log, systemctl status ${SERVICE_NAME}, and the Bird Monitor logs."
+  fi
+  die "The server did not respond successfully on http://127.0.0.1:${port}/api/status after installation."
+}
+
 confirm_uninstall() {
   printf 'This will permanently remove the server, recordings, exports, logs, config, and service user.\n'
   read -r -p "Type DELETE to continue: " confirmation
@@ -538,6 +586,7 @@ perform_install_or_update() {
   repair_runtime_permissions
   initialize_database
   start_service
+  verify_running_service
   show_post_install_notes
 }
 

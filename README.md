@@ -50,6 +50,14 @@ Recommended update command from a fresh checkout:
 cd /root && rm -rf animal-recording-update && git clone https://github.com/Divitare/animal-recording.git animal-recording-update && cd animal-recording-update && chmod +x install.sh && ./install.sh update
 ```
 
+Quick post-update verification:
+
+```bash
+curl -s http://127.0.0.1:8080/api/status
+```
+
+The JSON now includes `app.commit`, so you can confirm the running server is actually serving the updated commit.
+
 The installer will:
 
 - elevate with `sudo` if needed

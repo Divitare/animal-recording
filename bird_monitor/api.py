@@ -100,6 +100,9 @@ def status():
     settings = RecorderSettings.get_or_create()
     return jsonify(
         {
+            "app": {
+                "commit": current_app.config.get("APP_COMMIT", "unknown"),
+            },
             "service": _service_snapshot(include_devices=True),
             "settings": settings.to_dict(),
             "totals": {
@@ -114,6 +117,9 @@ def status():
 def live_status():
     return jsonify(
         {
+            "app": {
+                "commit": current_app.config.get("APP_COMMIT", "unknown"),
+            },
             "service": _service_snapshot(include_devices=False),
         }
     )

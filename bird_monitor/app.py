@@ -25,11 +25,13 @@ def create_app() -> Flask:
     load_dotenv()
 
     package_root = Path(__file__).resolve().parent.parent
+    commit_file = package_root / ".release-commit"
     data_dir = Path(os.getenv("BIRD_MONITOR_DATA_DIR", str(package_root / "data"))).resolve()
     recordings_dir = data_dir / "recordings"
     exports_dir = data_dir / "exports"
     clips_dir = data_dir / "clips"
     log_dir = Path(os.getenv("BIRD_MONITOR_LOG_DIR", str(data_dir / "logs"))).resolve()
+    app_commit = commit_file.read_text(encoding="utf-8").strip() if commit_file.exists() else "unknown"
 
     data_dir.mkdir(parents=True, exist_ok=True)
     recordings_dir.mkdir(parents=True, exist_ok=True)
@@ -47,6 +49,8 @@ def create_app() -> Flask:
         EXPORTS_DIR=str(exports_dir),
         CLIPS_DIR=str(clips_dir),
         LOG_DIR=str(log_dir),
+        APP_COMMIT=app_commit,
+        APP_COMMIT_FILE=str(commit_file),
         HOST=os.getenv("BIRD_MONITOR_HOST", "0.0.0.0"),
         PORT=int(os.getenv("BIRD_MONITOR_PORT", "8080")),
         DISABLE_BACKGROUND_RECORDER=_env_flag("BIRD_MONITOR_DISABLE_RECORDER", False),
