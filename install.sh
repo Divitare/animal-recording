@@ -341,11 +341,13 @@ install_species_runtime() {
 
   log "Installing TensorFlow Lite runtime for BirdNET."
   if "${VENV_DIR}/bin/pip" install tflite-runtime; then
+    log "Installed TensorFlow Lite runtime for BirdNET."
     return
   fi
 
-  warn "tflite-runtime could not be installed automatically. Trying full TensorFlow as a fallback."
+  log "tflite-runtime is not available for this platform or Python version. Trying full TensorFlow as a fallback."
   if "${VENV_DIR}/bin/pip" install tensorflow; then
+    log "Installed TensorFlow as the BirdNET runtime fallback."
     return
   fi
 
