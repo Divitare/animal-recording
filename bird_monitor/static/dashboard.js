@@ -904,7 +904,8 @@ function dashboardRenderStatistics() {
   }
 
   const mergedEvents = dashboardState.speciesEvents.length;
-  const speciesCount = dashboardState.speciesStats.length;
+  const statsItems = dashboardEffectiveSpeciesStats();
+  const speciesCount = statsItems.length;
   const bestConfidence = dashboardState.speciesEvents.reduce(
     (best, event) => Math.max(best, Number(event.confidence || 0)),
     0,
@@ -932,12 +933,12 @@ function dashboardRenderStatistics() {
     dashboardElements.statsGrid.append(wrapper);
   });
 
-  if (!dashboardState.speciesStats.length) {
+  if (!statsItems.length) {
     dashboardElements.speciesStatsList.innerHTML = `<div class="empty-state">No species were identified in this time span.</div>`;
     return;
   }
 
-  dashboardState.speciesStats.forEach((item) => {
+  statsItems.forEach((item) => {
     const row = document.createElement("article");
     row.className = "species-stat-row";
     const scientific = item.species_scientific_name ? `<span class="species-scientific">${item.species_scientific_name}</span>` : "";
@@ -955,6 +956,69 @@ function dashboardRenderStatistics() {
     `;
     dashboardElements.speciesStatsList.append(row);
   });
+}
+
+function dashboardEffectiveSpeciesStats() {
+  if (dashboardState.speciesStats.length) {
+    return dashboardState.speciesStats;
+  }
+  return dashboardBuildSpeciesStatsFromEvents(dashboardState.speciesEvents);
+}
+
+function dashboardBuildSpeciesStatsFromEvents(events) {
+  const buckets = new Map();
+
+  events.forEach((event) => {
+    const commonName = event.species_common_name || "Unknown species";
+    const scientificName = event.species_scientific_name || null;
+    const key = `${commonName}::${scientificName || ""}`;
+    const eventConfidence = Number(
+      event.average_confidence != null ? event.average_confidence : (event.confidence || 0),
+    );
+    const detectionCount = Number(event.detection_count || 1);
+    const endedAt = event.ended_at || null;
+
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        species_common_name: commonName,
+        species_scientific_name: scientificName,
+        event_count: 0,
+        detection_count: 0,
+        average_confidence_total: 0,
+        best_confidence: 0,
+        last_seen_at: endedAt,
+      });
+    }
+
+    const bucket = buckets.get(key);
+    bucket.event_count += 1;
+    bucket.detection_count += detectionCount;
+    bucket.average_confidence_total += eventConfidence;
+    bucket.best_confidence = Math.max(bucket.best_confidence, Number(event.confidence || eventConfidence || 0));
+    if (endedAt && (!bucket.last_seen_at || new Date(endedAt) > new Date(bucket.last_seen_at))) {
+      bucket.last_seen_at = endedAt;
+    }
+  });
+
+  return Array.from(buckets.values())
+    .map((bucket) => ({
+      species_common_name: bucket.species_common_name,
+      species_scientific_name: bucket.species_scientific_name,
+      event_count: bucket.event_count,
+      detection_count: bucket.detection_count,
+      average_confidence: bucket.average_confidence_total / Math.max(bucket.event_count, 1),
+      best_confidence: bucket.best_confidence,
+      last_seen_at: bucket.last_seen_at,
+    }))
+    .sort((left, right) => {
+      if (right.event_count !== left.event_count) {
+        return right.event_count - left.event_count;
+      }
+      if (right.average_confidence !== left.average_confidence) {
+        return right.average_confidence - left.average_confidence;
+      }
+      return String(left.species_common_name).localeCompare(String(right.species_common_name));
+    });
 }
 
 function dashboardBuildDetectionInline(detection) {
