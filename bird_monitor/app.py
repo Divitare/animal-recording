@@ -67,7 +67,10 @@ def create_app() -> Flask:
             version = int(asset_path.stat().st_mtime) if asset_path.exists() else 0
             return url_for("static", filename=filename, v=version)
 
-        return {"asset_url": asset_url}
+        return {
+            "asset_url": asset_url,
+            "app_commit": app.config.get("APP_COMMIT", "unknown"),
+        }
 
     @app.get("/")
     def index():
