@@ -16,6 +16,7 @@ const dashboardState = {
   birdnetLogStatusMessage: "Logs are kept live here for BirdNET analysis and recorder activity.",
   birdnetLogStatusTone: "info",
   livePollHandle: null,
+  autoFollowRange: true,
   zoomFactor: 1,
   timelineDragPointerId: null,
   timelineDragStartX: 0,
@@ -121,16 +122,46 @@ function dashboardSetDefaultRange() {
   const start = new Date(end.getTime() - (6 * 60 * 60 * 1000));
   dashboardElements.rangeStart.value = dashboardDatetimeLocalValue(start);
   dashboardElements.rangeEnd.value = dashboardDatetimeLocalValue(end);
+  dashboardState.autoFollowRange = true;
+}
+
+function dashboardApplyAutoFollowRange() {
+  const end = new Date();
+  const start = new Date(end.getTime() - (6 * 60 * 60 * 1000));
+  dashboardElements.rangeStart.value = dashboardDatetimeLocalValue(start);
+  dashboardElements.rangeEnd.value = dashboardDatetimeLocalValue(end);
+}
+
+function dashboardRangeCanReceiveUpdates() {
+  const startValue = dashboardElements.rangeStart.value;
+  const endValue = dashboardElements.rangeEnd.value;
+  if (!startValue || !endValue) {
+    return false;
+  }
+
+  const start = new Date(startValue);
+  const end = new Date(endValue);
+  const now = new Date();
+  const graceEnd = new Date(now.getTime() + (2 * 60 * 1000));
+  return start <= now && end >= new Date(now.getTime() - (2 * 60 * 1000))
+    || start <= graceEnd && end >= now;
 }
 
 function dashboardBindEvents() {
   dashboardElements.rangeForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    dashboardState.autoFollowRange = false;
     try {
       await dashboardLoadRecordings(true);
     } catch (error) {
       dashboardShowError(error);
     }
+  });
+
+  [dashboardElements.rangeStart, dashboardElements.rangeEnd].forEach((element) => {
+    element.addEventListener("input", () => {
+      dashboardState.autoFollowRange = false;
+    });
   });
 
   dashboardElements.refreshButton.addEventListener("click", async () => {
@@ -279,6 +310,9 @@ function dashboardBindEvents() {
 }
 
 async function dashboardRefreshAll() {
+  if (dashboardState.autoFollowRange) {
+    dashboardApplyAutoFollowRange();
+  }
   await Promise.all([
     dashboardLoadStatus(),
     dashboardLoadRecordings(false),
@@ -311,10 +345,19 @@ function dashboardStartLivePolling() {
   }
   dashboardState.livePollHandle = window.setInterval(async () => {
     try {
-      await Promise.all([
-        dashboardLoadLiveStatus(),
+      if (dashboardState.autoFollowRange) {
+        dashboardApplyAutoFollowRange();
+      }
+
+      const shouldRefreshRecordings = dashboardState.autoFollowRange || dashboardRangeCanReceiveUpdates();
+      const tasks = [
+        dashboardLoadStatus(),
         dashboardLoadBirdnetLogs(),
-      ]);
+      ];
+      if (shouldRefreshRecordings) {
+        tasks.push(dashboardLoadRecordings(false));
+      }
+      await Promise.all(tasks);
     } catch (error) {
       dashboardShowError(error);
     }
@@ -419,9 +462,13 @@ function dashboardRenderLiveDetections(service) {
   const pendingWindows = Number(service.birdnet_live_pending_windows || 0);
   const completedWindows = Number(service.birdnet_live_completed_windows || 0);
 
-  dashboardElements.liveDetectionsSummary.textContent = service.is_recording
-    ? `BirdNET checks each finished ${liveWindowSeconds}-second window while the recording continues. ${completedWindows} window(s) completed, ${pendingWindows} pending.`
-    : "BirdNET checks each finished 9-second window while the recording continues.";
+  if (service.is_recording) {
+    dashboardElements.liveDetectionsSummary.textContent = `BirdNET checks each finished ${liveWindowSeconds}-second window while the recording continues. ${completedWindows} window(s) completed, ${pendingWindows} pending.`;
+  } else if (items.length) {
+    dashboardElements.liveDetectionsSummary.textContent = "Latest live BirdNET detections from the most recent recording.";
+  } else {
+    dashboardElements.liveDetectionsSummary.textContent = "BirdNET checks each finished 9-second window while the recording continues.";
+  }
 
   dashboardElements.liveDetectionsList.innerHTML = "";
   if (!items.length) {
