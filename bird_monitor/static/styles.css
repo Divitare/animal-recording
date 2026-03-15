@@ -131,6 +131,11 @@ h1 {
   grid-column: span 4;
 }
 
+.birdnet-log-panel {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
 .timeline-panel {
   grid-column: 1 / -1;
 }
@@ -310,6 +315,10 @@ h1 {
 
 .birdnet-runtime-grid .stat-card strong {
   word-break: break-word;
+}
+
+.birdnet-runtime-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .birdnet-log-console {
@@ -780,6 +789,10 @@ button:hover {
   .schedule-panel,
   .timeline-panel {
     grid-column: auto;
+  }
+
+  .birdnet-runtime-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
