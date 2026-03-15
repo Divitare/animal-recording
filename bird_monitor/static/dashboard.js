@@ -16,7 +16,9 @@ const dashboardState = {
   birdnetLogStatusMessage: "Logs are kept live here for BirdNET analysis and recorder activity.",
   birdnetLogStatusTone: "info",
   livePollHandle: null,
+  livePollInFlight: false,
   autoFollowRange: true,
+  recordingsDataSignature: "",
   zoomFactor: 1,
   timelineDragPointerId: null,
   timelineDragStartX: 0,
@@ -145,6 +147,68 @@ function dashboardRangeCanReceiveUpdates() {
   const graceEnd = new Date(now.getTime() + (2 * 60 * 1000));
   return start <= now && end >= new Date(now.getTime() - (2 * 60 * 1000))
     || start <= graceEnd && end >= now;
+}
+
+function dashboardCurrentPageScrollTop() {
+  return window.scrollY || document.documentElement.scrollTop || 0;
+}
+
+function dashboardRestorePageScrollTop(scrollTop) {
+  window.scrollTo(window.scrollX || 0, Math.max(Number(scrollTop) || 0, 0));
+}
+
+function dashboardCaptureOpenDetailKeys(container, attributeName) {
+  if (!container) {
+    return new Set();
+  }
+  return new Set(
+    Array.from(container.querySelectorAll(`details[${attributeName}][open]`))
+      .map((detail) => detail.getAttribute(attributeName))
+      .filter(Boolean),
+  );
+}
+
+function dashboardSpeciesStatKey(item) {
+  return `${item.species_common_name || "Unknown species"}::${item.species_scientific_name || ""}`;
+}
+
+function dashboardBuildRecordingsDataSignature(payload) {
+  const recordings = (payload.items || []).map((recording) => ({
+    id: recording.id,
+    started_at: recording.started_at,
+    ended_at: recording.ended_at,
+    duration_seconds: recording.duration_seconds,
+    size_bytes: recording.size_bytes,
+    peak_amplitude: recording.peak_amplitude,
+    detections: (recording.detections || []).map((detection) => [
+      detection.id || "",
+      detection.started_at || "",
+      detection.ended_at || "",
+      detection.species_common_name || "",
+      detection.species_scientific_name || "",
+      detection.clip_url || "",
+      detection.species_score ?? detection.confidence ?? "",
+    ].join("|")),
+  }));
+  const speciesEvents = (payload.species_events || []).map((event) => [
+    event.id || "",
+    event.started_at || "",
+    event.ended_at || "",
+    event.species_common_name || "",
+    event.species_scientific_name || "",
+    event.average_confidence ?? event.confidence ?? "",
+    event.detection_count || 0,
+  ].join("|"));
+  const speciesStats = (payload.species_stats || []).map((item) => [
+    item.species_common_name || "",
+    item.species_scientific_name || "",
+    item.event_count || 0,
+    item.detection_count || 0,
+    item.average_confidence || 0,
+    item.best_confidence || 0,
+    item.last_seen_at || "",
+  ].join("|"));
+  return JSON.stringify({ recordings, speciesEvents, speciesStats });
 }
 
 function dashboardBindEvents() {
@@ -344,6 +408,10 @@ function dashboardStartLivePolling() {
     clearInterval(dashboardState.livePollHandle);
   }
   dashboardState.livePollHandle = window.setInterval(async () => {
+    if (dashboardState.livePollInFlight) {
+      return;
+    }
+    dashboardState.livePollInFlight = true;
     try {
       if (dashboardState.autoFollowRange) {
         dashboardApplyAutoFollowRange();
@@ -360,17 +428,24 @@ function dashboardStartLivePolling() {
       await Promise.all(tasks);
     } catch (error) {
       dashboardShowError(error);
+    } finally {
+      dashboardState.livePollInFlight = false;
     }
   }, 1500);
 }
 
 async function dashboardLoadRecordings(resetZoom) {
   const previousScrollRatio = dashboardCurrentScrollRatio();
+  const previousPageScrollTop = dashboardCurrentPageScrollTop();
+  const openRecordingIds = dashboardCaptureOpenDetailKeys(dashboardElements.recordingsList, "data-recording-id");
+  const openSpeciesKeys = dashboardCaptureOpenDetailKeys(dashboardElements.speciesStatsList, "data-species-key");
   const params = new URLSearchParams({
     start: new Date(dashboardElements.rangeStart.value).toISOString(),
     end: new Date(dashboardElements.rangeEnd.value).toISOString(),
   });
   const payload = await dashboardFetchJson(`/api/recordings?${params.toString()}`);
+  const nextSignature = dashboardBuildRecordingsDataSignature(payload);
+  const shouldRenderLists = resetZoom || nextSignature !== dashboardState.recordingsDataSignature;
   dashboardState.recordings = payload.items || [];
   dashboardState.detections = payload.detections || [];
   dashboardState.speciesEvents = payload.species_events || [];
@@ -384,8 +459,14 @@ async function dashboardLoadRecordings(resetZoom) {
   if (!resetZoom) {
     dashboardRestoreScrollRatio(previousScrollRatio);
   }
-  dashboardRenderStatistics();
-  dashboardRenderRecordingsList();
+  if (shouldRenderLists) {
+    dashboardRenderStatistics(openSpeciesKeys);
+    dashboardRenderRecordingsList(openRecordingIds);
+    dashboardState.recordingsDataSignature = nextSignature;
+    window.requestAnimationFrame(() => {
+      dashboardRestorePageScrollTop(previousPageScrollTop);
+    });
+  }
 }
 
 function dashboardRenderStatus(payload) {
@@ -999,7 +1080,7 @@ function dashboardBuildDetectionTitle(detection) {
   return `${detection.species_common_name}${scientific} | ${dashboardFormatDateTime(detection.started_at)} - ${dashboardFormatDateTime(detection.ended_at)} | confidence ${Math.round(((detection.species_score != null ? detection.species_score : detection.confidence) || 0) * 100)}% | ${clipText}`;
 }
 
-function dashboardRenderStatistics() {
+function dashboardRenderStatistics(openSpeciesKeys = new Set()) {
   dashboardElements.statsGrid.innerHTML = "";
   dashboardElements.speciesStatsList.innerHTML = "";
 
@@ -1046,6 +1127,8 @@ function dashboardRenderStatistics() {
   statsItems.forEach((item) => {
     const row = document.createElement("details");
     row.className = "species-stat-row";
+    row.dataset.speciesKey = dashboardSpeciesStatKey(item);
+    row.open = openSpeciesKeys.has(row.dataset.speciesKey);
     const scientific = item.species_scientific_name ? `<span class="species-scientific">${item.species_scientific_name}</span>` : "";
     row.innerHTML = `
       <summary class="species-stat-summary">
@@ -1072,7 +1155,7 @@ function dashboardRenderStatistics() {
   });
 }
 
-function dashboardRenderRecordingsList() {
+function dashboardRenderRecordingsList(openRecordingIds = new Set()) {
   dashboardElements.recordingsList.innerHTML = "";
 
   if (!dashboardState.range) {
@@ -1092,13 +1175,15 @@ function dashboardRenderRecordingsList() {
   }
 
   recordings.forEach((recording) => {
-    dashboardElements.recordingsList.append(dashboardBuildRecordingAccordion(recording));
+    dashboardElements.recordingsList.append(dashboardBuildRecordingAccordion(recording, openRecordingIds));
   });
 }
 
-function dashboardBuildRecordingAccordion(recording) {
+function dashboardBuildRecordingAccordion(recording, openRecordingIds = new Set()) {
   const wrapper = document.createElement("details");
   wrapper.className = "recording-item";
+  wrapper.dataset.recordingId = String(recording.id);
+  wrapper.open = openRecordingIds.has(wrapper.dataset.recordingId);
 
   const summary = document.createElement("summary");
   summary.className = "recording-item-summary";

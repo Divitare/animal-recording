@@ -16,12 +16,14 @@ PID_FILE="${DATA_DIR}/${SERVICE_NAME}.pid"
 RUN_MODE_FILE="${INSTALL_ROOT}/.run-mode"
 COMMIT_FILE="${INSTALL_ROOT}/installed-commit.txt"
 RELEASE_COMMIT_FILE="${CURRENT_DIR}/.release-commit"
+REQUIREMENTS_HASH_FILE="${INSTALL_ROOT}/.requirements.sha256"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="${1:-auto}"
 PACKAGE_MANAGER=""
 PYTHON_BIN=""
 SOURCE_DIR=""
 SOURCE_IS_TEMP="false"
+VENV_REBUILT="false"
 INSTALL_LOG_DIR="${TMPDIR:-/tmp}/${APP_NAME}-logs"
 INSTALL_LOG_FILE=""
 CURRENT_STAGE="startup"
@@ -117,6 +119,29 @@ trap 'finalize_install' EXIT
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+python_minor_version() {
+  "$1" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+}
+
+hash_file() {
+  local path="$1"
+  if command_exists sha256sum; then
+    sha256sum "${path}" | awk '{print $1}'
+    return
+  fi
+  if command_exists shasum; then
+    shasum -a 256 "${path}" | awk '{print $1}'
+    return
+  fi
+  "${PYTHON_BIN}" - "${path}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
 }
 
 require_root() {
@@ -276,7 +301,7 @@ prepare_source_checkout() {
   set_stage "Downloading latest source code"
   SOURCE_DIR="$(mktemp -d)"
   SOURCE_IS_TEMP="true"
-  if ! git clone --depth 1 "${REPO_URL}" "${SOURCE_DIR}"; then
+  if ! git clone --depth 1 --filter=blob:none "${REPO_URL}" "${SOURCE_DIR}"; then
     cleanup_source_checkout
     die "Could not download the latest code from ${REPO_URL}. Check git and network access."
   fi
@@ -330,12 +355,47 @@ sync_source() {
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}"
 }
 
-create_virtualenv() {
-  set_stage "Creating Python virtual environment"
+ensure_virtualenv() {
+  set_stage "Ensuring Python virtual environment"
+  local desired_version=""
+  local existing_version=""
+  desired_version="$(python_minor_version "${PYTHON_BIN}")"
+
+  if [[ -x "${VENV_DIR}/bin/python" && -x "${VENV_DIR}/bin/pip" ]]; then
+    existing_version="$(python_minor_version "${VENV_DIR}/bin/python" 2>/dev/null || true)"
+    if [[ -n "${existing_version}" && "${existing_version}" == "${desired_version}" ]]; then
+      VENV_REBUILT="false"
+      log "Reusing existing virtual environment at ${VENV_DIR} (Python ${existing_version})."
+      return
+    fi
+    log "Rebuilding virtual environment because Python changed from ${existing_version:-unknown} to ${desired_version}."
+  else
+    log "Creating Python virtual environment at ${VENV_DIR}."
+  fi
+
   rm -rf "${VENV_DIR}"
   "${PYTHON_BIN}" -m venv "${VENV_DIR}"
-  "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
-  "${VENV_DIR}/bin/pip" install -r "${CURRENT_DIR}/requirements.txt"
+  VENV_REBUILT="true"
+}
+
+sync_python_dependencies() {
+  set_stage "Syncing Python dependencies"
+  local current_requirements_hash=""
+  local installed_requirements_hash=""
+
+  current_requirements_hash="$(hash_file "${CURRENT_DIR}/requirements.txt")"
+  installed_requirements_hash="$(cat "${REQUIREMENTS_HASH_FILE}" 2>/dev/null || true)"
+
+  if [[ "${VENV_REBUILT}" != "true" ]] && [[ "${current_requirements_hash}" == "${installed_requirements_hash}" ]] && [[ -x "${VENV_DIR}/bin/python" && -x "${VENV_DIR}/bin/pip" ]]; then
+    log "requirements.txt is unchanged (${current_requirements_hash}); reusing installed core Python packages."
+  else
+    log "Installing core Python packages from requirements.txt."
+    "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
+    "${VENV_DIR}/bin/pip" install -r "${CURRENT_DIR}/requirements.txt"
+    printf '%s\n' "${current_requirements_hash}" > "${REQUIREMENTS_HASH_FILE}"
+    chmod 644 "${REQUIREMENTS_HASH_FILE}" 2>/dev/null || true
+  fi
+
   install_species_runtime
   verify_species_runtime
 }
@@ -581,7 +641,8 @@ perform_install_or_update() {
   prepare_source_checkout
   sync_source
   cleanup_source_checkout
-  create_virtualenv
+  ensure_virtualenv
+  sync_python_dependencies
   set_stage "Repairing runtime permissions"
   repair_runtime_permissions
   initialize_database
