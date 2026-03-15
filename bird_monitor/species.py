@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import importlib.metadata
 import os
 import platform
@@ -84,6 +85,9 @@ class BirdNetSpeciesClassifier:
 
         self._recording_cls = Recording
         self._recording_buffer_cls = RecordingBuffer
+        self._recording_buffer_parameters = tuple(
+            inspect.signature(RecordingBuffer.__init__).parameters.keys()
+        ) if RecordingBuffer is not None else ()
         self._analyzer = Analyzer()
         self._min_confidence = float(os.getenv("BIRD_MONITOR_SPECIES_MIN_CONFIDENCE", "0.35"))
         self.runtime_details = _collect_runtime_details(
@@ -93,20 +97,22 @@ class BirdNetSpeciesClassifier:
         )
         packages = self.runtime_details.get("packages", {})
         self._logger.info(
-            "BirdNET runtime ready. backend=%s birdnetlib=%s librosa=%s tensorflow=%s tflite-runtime=%s min_confidence=%.2f buffer_fallback=%s",
+            "BirdNET runtime ready. backend=%s birdnetlib=%s librosa=%s resampy=%s tensorflow=%s tflite-runtime=%s min_confidence=%.2f buffer_fallback=%s",
             self.runtime_details.get("runtime_backend", "unknown"),
             packages.get("birdnetlib") or "missing",
             packages.get("librosa") or "missing",
+            packages.get("resampy") or "missing",
             packages.get("tensorflow") or "missing",
             packages.get("tflite-runtime") or "missing",
             self._min_confidence,
             self._recording_buffer_cls is not None,
         )
         self._logger.info(
-            "BirdNET classes analyzer=%s recording=%s recording_buffer=%s",
+            "BirdNET classes analyzer=%s recording=%s recording_buffer=%s buffer_parameters=%s",
             self._analyzer.__class__.__name__,
             self._recording_cls.__name__,
             self._recording_buffer_cls.__name__ if self._recording_buffer_cls is not None else "unavailable",
+            self._recording_buffer_parameters or ("unavailable",),
         )
 
     def available(self) -> bool:
@@ -121,10 +127,13 @@ class BirdNetSpeciesClassifier:
         recording = self._recording_cls(self._analyzer, str(file_path), **kwargs)
         recording.analyze()
         detections = list(getattr(recording, "detections", []))
+        allow_list = list(getattr(recording.analyzer, "custom_species_list", []) or [])
         self._logger.info(
-            "BirdNET file analysis completed path=%s raw_detection_count=%s",
+            "BirdNET file analysis completed path=%s raw_detection_count=%s allow_list_size=%s return_all_detections=%s",
             file_path,
             len(detections),
+            len(allow_list),
+            kwargs.get("return_all_detections"),
         )
         return detections
 
@@ -144,12 +153,14 @@ class BirdNetSpeciesClassifier:
             _summarize_audio_samples(samples, sample_rate),
         )
 
-        attempts = [
-            ("sample_rate keyword", lambda: self._recording_buffer_cls(self._analyzer, samples, sample_rate=sample_rate, **kwargs)),
-            ("samplerate keyword", lambda: self._recording_buffer_cls(self._analyzer, samples, samplerate=sample_rate, **kwargs)),
-            ("sr keyword", lambda: self._recording_buffer_cls(self._analyzer, samples, sr=sample_rate, **kwargs)),
-            ("positional sample rate", lambda: self._recording_buffer_cls(self._analyzer, samples, sample_rate, **kwargs)),
-        ]
+        attempts = _build_recording_buffer_attempts(
+            self._recording_buffer_cls,
+            self._analyzer,
+            samples,
+            sample_rate,
+            kwargs,
+            self._recording_buffer_parameters,
+        )
         errors: list[str] = []
         for attempt_name, attempt in attempts:
             try:
@@ -199,6 +210,7 @@ class BirdNetSpeciesClassifier:
         }
         kwargs: dict[str, object] = {
             "min_conf": effective_confidence,
+            "return_all_detections": True,
         }
         if latitude is not None and longitude is not None:
             kwargs["lat"] = latitude
@@ -461,6 +473,7 @@ def _collect_runtime_details(
     packages = {
         "birdnetlib": _package_version("birdnetlib"),
         "librosa": _package_version("librosa"),
+        "resampy": _package_version("resampy"),
         "tensorflow": _package_version("tensorflow"),
         "tflite-runtime": _package_version("tflite-runtime"),
     }
@@ -497,6 +510,63 @@ def _safe_describe_audio_file(file_path: Path) -> dict[str, object] | None:
         return describe_audio_file(file_path)
     except Exception:
         return None
+
+
+def _build_recording_buffer_attempts(
+    recording_buffer_cls,
+    analyzer,
+    samples: np.ndarray,
+    sample_rate: int,
+    kwargs: dict[str, object],
+    parameter_names: tuple[str, ...],
+) -> list[tuple[str, object]]:
+    attempts: list[tuple[str, object]] = []
+
+    if "rate" in parameter_names:
+        attempts.append(
+            (
+                "rate keyword",
+                lambda: recording_buffer_cls(analyzer, samples, rate=sample_rate, **kwargs),
+            )
+        )
+    if "sample_rate" in parameter_names:
+        attempts.append(
+            (
+                "sample_rate keyword",
+                lambda: recording_buffer_cls(analyzer, samples, sample_rate=sample_rate, **kwargs),
+            )
+        )
+    if "samplerate" in parameter_names:
+        attempts.append(
+            (
+                "samplerate keyword",
+                lambda: recording_buffer_cls(analyzer, samples, samplerate=sample_rate, **kwargs),
+            )
+        )
+    if "sr" in parameter_names:
+        attempts.append(
+            (
+                "sr keyword",
+                lambda: recording_buffer_cls(analyzer, samples, sr=sample_rate, **kwargs),
+            )
+        )
+
+    attempts.append(
+        (
+            "positional sample rate",
+            lambda: recording_buffer_cls(analyzer, samples, sample_rate, **kwargs),
+        )
+    )
+
+    unique_attempts: list[tuple[str, object]] = []
+    seen_names: set[str] = set()
+    for attempt_name, attempt in attempts:
+        if attempt_name in seen_names:
+            continue
+        seen_names.add(attempt_name)
+        unique_attempts.append((attempt_name, attempt))
+
+    return unique_attempts
 
 
 def _serialize_birdnet_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
@@ -541,6 +611,7 @@ def _compact_detection_payload(item: dict[str, object]) -> dict[str, object]:
         "confidence",
         "start_time",
         "end_time",
+        "is_predicted_for_location_and_date",
     )
     payload = {key: item.get(key) for key in keys if key in item}
     if not payload:

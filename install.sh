@@ -342,9 +342,9 @@ create_virtualenv() {
 
 install_species_runtime() {
   set_stage "Installing optional BirdNET runtime dependencies"
-  if "${VENV_DIR}/bin/python" -c "import birdnetlib, librosa" >/dev/null 2>&1; then
+  if "${VENV_DIR}/bin/python" -c "import birdnetlib, librosa, resampy" >/dev/null 2>&1; then
     log "BirdNET Python packages are available."
-  elif "${VENV_DIR}/bin/pip" install birdnetlib librosa; then
+  elif "${VENV_DIR}/bin/pip" install birdnetlib librosa resampy; then
     log "Installed BirdNET Python packages."
   else
     warn "BirdNET Python packages could not be installed automatically."
