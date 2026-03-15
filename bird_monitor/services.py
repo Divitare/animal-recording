@@ -56,6 +56,7 @@ class RecordingManager:
             "species_available": self._species_classifier.available(),
             "species_enabled": False,
             "species_error": getattr(self._species_classifier, "failure_reason", None),
+            "last_species_analysis_error": None,
             "birdnet_runtime_details": runtime_details,
             "birdnet_log_file": self.app.config.get("BIRDNET_LOG_FILE"),
             "app_log_file": self.app.config.get("APP_LOG_FILE"),
@@ -293,7 +294,7 @@ class RecordingManager:
                     species_provider=species_provider,
                     species_available=species_available,
                     species_enabled=species_enabled,
-                    species_error=species_error,
+                    species_error=species_error or self.get_status(include_devices=False).get("last_species_analysis_error"),
                     birdnet_runtime_details=runtime_details,
                     birdnet_log_file=self.app.config.get("BIRDNET_LOG_FILE"),
                     app_log_file=self.app.config.get("APP_LOG_FILE"),
@@ -402,6 +403,7 @@ class RecordingManager:
                     species_predictions = []
                     last_processing_summary = "Species analysis is disabled for this recorder."
                     detected_species: list[str] = []
+                    analysis_succeeded = False
                     if species_provider == "birdnet" and not species_enabled:
                         last_processing_summary = species_error or "BirdNET is unavailable, so no species analysis was run."
                         self._birdnet_logger.warning(
@@ -440,7 +442,8 @@ class RecordingManager:
                                 min_confidence=settings.species_min_confidence,
                             )
                             analysis_details = self._analysis_details()
-                            self._set_status(species_error=None)
+                            analysis_succeeded = True
+                            self._set_status(species_error=None, last_species_analysis_error=None)
                             last_processing_summary, detected_species = self._build_recording_summary(species_predictions)
                             self._set_status(
                                 birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
@@ -455,6 +458,7 @@ class RecordingManager:
                             last_processing_summary = failure_message
                             self._set_status(
                                 species_error=failure_message,
+                                last_species_analysis_error=failure_message,
                                 birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
                                 birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
                                 birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
@@ -478,7 +482,7 @@ class RecordingManager:
                             recording_started_at=started_at,
                             predictions=species_predictions,
                         )
-                    elif species_enabled:
+                    elif species_enabled and analysis_succeeded:
                         self._birdnet_logger.info("BirdNET found no detections in %s, so no clips were created.", file_path.name)
 
                     self._set_status(
