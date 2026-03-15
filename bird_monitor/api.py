@@ -18,7 +18,7 @@ from .audio import input_setting_supported, list_input_devices, resolve_input_de
 from .extensions import db
 from .geocoding import GeocodingError, geocode_address
 from .models import BirdDetection, RecorderSettings, Recording, RecordingSchedule
-from .runtime_logging import get_recent_birdnet_logs
+from .runtime_logging import clear_application_logs, get_birdnet_logger, get_recent_birdnet_logs
 from .services import get_background_manager
 
 api_bp = Blueprint("api", __name__)
@@ -62,6 +62,17 @@ def _json_error(message: str, status_code: int = 400):
     response = jsonify({"error": message})
     response.status_code = status_code
     return response
+
+
+def _request_actor() -> str:
+    forwarded_for = request.headers.get("X-Forwarded-For", "").strip()
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def _audit_logger():
+    return get_birdnet_logger()
 
 
 def _service_snapshot(include_devices: bool) -> dict[str, object]:
@@ -147,6 +158,18 @@ def birdnet_logs():
     )
 
 
+@api_bp.post("/birdnet/logs/clear")
+def clear_birdnet_logs():
+    cleared = clear_application_logs()
+    return jsonify(
+        {
+            "ok": True,
+            "message": "Bird monitor logs were cleared.",
+            **cleared,
+        }
+    )
+
+
 @api_bp.get("/devices")
 def devices():
     try:
@@ -173,6 +196,14 @@ def geocode_location():
     except GeocodingError as exc:
         return _json_error(str(exc))
 
+    _audit_logger().info(
+        "Geocode resolved for %s query=%s resolved_name=%s latitude=%s longitude=%s",
+        _request_actor(),
+        query,
+        result.display_name,
+        result.latitude,
+        result.longitude,
+    )
     return jsonify(result.to_dict())
 
 
@@ -180,6 +211,7 @@ def geocode_location():
 def update_settings():
     payload = request.get_json(silent=True) or {}
     settings = RecorderSettings.get_or_create()
+    before = settings.to_dict()
 
     try:
         if "device_name" in payload:
@@ -257,6 +289,24 @@ def update_settings():
         )
 
     db.session.commit()
+    _audit_logger().info(
+        "Settings updated by %s device_index=%s sample_rate=%s channels=%s segment_seconds=%s species_provider=%s confidence=%.2f location=%s latitude=%s longitude=%s",
+        _request_actor(),
+        settings.device_index,
+        settings.sample_rate,
+        settings.channels,
+        settings.segment_seconds,
+        settings.species_provider,
+        settings.species_min_confidence,
+        settings.location_name or "none",
+        settings.latitude if settings.latitude is not None else "none",
+        settings.longitude if settings.longitude is not None else "none",
+    )
+    _audit_logger().info(
+        "Settings delta previous=%s updated=%s",
+        before,
+        settings.to_dict(),
+    )
     return jsonify(settings.to_dict())
 
 
@@ -265,6 +315,7 @@ def start_manual_recording():
     manager = get_background_manager()
     if manager is None:
         return _json_error("The recorder service is disabled.", 503)
+    _audit_logger().info("Manual recording start requested by %s", _request_actor())
     manager.request_manual_start()
     return jsonify({"service": manager.get_status(include_devices=False)})
 
@@ -274,6 +325,7 @@ def stop_manual_recording():
     manager = get_background_manager()
     if manager is None:
         return _json_error("The recorder service is disabled.", 503)
+    _audit_logger().info("Manual recording stop requested by %s", _request_actor())
     manager.request_manual_stop()
     return jsonify({"service": manager.get_status(include_devices=False)})
 
@@ -317,26 +369,36 @@ def create_schedule():
 
     db.session.add(schedule)
     db.session.commit()
+    _audit_logger().info("Schedule created by %s schedule=%s", _request_actor(), schedule.to_dict())
     return jsonify(schedule.to_dict()), 201
 
 
 @api_bp.put("/schedules/<int:schedule_id>")
 def update_schedule(schedule_id: int):
     schedule = RecordingSchedule.query.get_or_404(schedule_id)
+    before = schedule.to_dict()
     payload = request.get_json(silent=True) or {}
     try:
         _upsert_schedule(schedule, payload)
     except ValueError as exc:
         return _json_error(str(exc))
     db.session.commit()
+    _audit_logger().info(
+        "Schedule updated by %s previous=%s updated=%s",
+        _request_actor(),
+        before,
+        schedule.to_dict(),
+    )
     return jsonify(schedule.to_dict())
 
 
 @api_bp.delete("/schedules/<int:schedule_id>")
 def delete_schedule(schedule_id: int):
     schedule = RecordingSchedule.query.get_or_404(schedule_id)
+    payload = schedule.to_dict()
     db.session.delete(schedule)
     db.session.commit()
+    _audit_logger().info("Schedule deleted by %s schedule=%s", _request_actor(), payload)
     return jsonify({"ok": True})
 
 

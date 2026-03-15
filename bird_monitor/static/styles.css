@@ -180,6 +180,13 @@ h1 {
   margin-bottom: 16px;
 }
 
+.panel-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .activity-top {
   display: flex;
   justify-content: space-between;
@@ -355,6 +362,14 @@ h1 {
   color: rgba(246, 236, 218, 0.72);
 }
 
+#birdnet-log-status[data-tone="success"] {
+  color: var(--accent);
+}
+
+#birdnet-log-status[data-tone="error"] {
+  color: var(--danger);
+}
+
 .birdnet-log-line {
   display: grid;
   grid-template-columns: auto auto minmax(120px, 220px) minmax(0, 1fr) auto;
@@ -519,6 +534,12 @@ button:hover {
 .danger-button {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.danger-button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .checkbox-row {

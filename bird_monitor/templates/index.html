@@ -134,8 +134,13 @@
 
         <section class="panel birdnet-log-panel">
           <div class="panel-head">
-            <h2>BirdNET Runtime</h2>
-            <p id="birdnet-runtime-summary">Checking whether BirdNET is installed and ready...</p>
+            <div>
+              <h2>BirdNET Runtime</h2>
+              <p id="birdnet-runtime-summary">Checking whether BirdNET is installed and ready...</p>
+            </div>
+            <div class="panel-actions">
+              <button type="button" id="clear-logs-button" class="danger-button">Delete logs</button>
+            </div>
           </div>
           <div class="stats-grid birdnet-runtime-grid">
             <article class="stat-card">
@@ -157,6 +162,7 @@
           </div>
           <p class="panel-copy" id="birdnet-package-summary">BirdNET package details will appear here.</p>
           <p class="panel-copy" id="birdnet-log-path">BirdNET log file path will appear here.</p>
+          <p class="panel-copy" id="birdnet-log-status">Logs are kept live here for BirdNET analysis and recorder activity.</p>
           <div class="birdnet-log-console" id="birdnet-log-console" aria-live="polite">
             <div class="birdnet-log-empty">No BirdNET log entries yet.</div>
           </div>

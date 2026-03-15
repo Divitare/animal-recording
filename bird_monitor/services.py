@@ -97,6 +97,7 @@ class RecordingManager:
         with self._manual_lock:
             self._manual_mode = True
             self._manual_stop_requested = False
+        self._birdnet_logger.info("Manual recording start requested.")
         self._set_status(
             manual_mode=True,
             activity_reason="manual-armed",
@@ -110,6 +111,7 @@ class RecordingManager:
         with self._manual_lock:
             self._manual_mode = False
             self._manual_stop_requested = True
+        self._birdnet_logger.info("Manual recording stop requested.")
         self._set_status(
             manual_mode=False,
             activity_message="Stopping manual recording...",
@@ -335,6 +337,17 @@ class RecordingManager:
                     activity_message = f"Scheduled recording is active: {', '.join(active_schedule_names)}"
 
                 started_at = datetime.utcnow()
+                self._birdnet_logger.info(
+                    "Preparing recording segment mode=%s segment_seconds=%s sample_rate=%s channels=%s preferred_device_index=%s preferred_device_name=%s active_schedules=%s species_enabled=%s",
+                    capture_mode,
+                    segment_seconds,
+                    settings.sample_rate,
+                    settings.channels,
+                    settings.device_index if settings.device_index is not None else "auto",
+                    settings.device_name or "auto",
+                    active_schedule_names or ["none"],
+                    species_enabled,
+                )
                 self._set_status(
                     is_recording=True,
                     manual_mode=manual_mode,
@@ -360,8 +373,24 @@ class RecordingManager:
                         should_stop=lambda: self._recording_should_stop(capture_mode),
                     )
                     ended_at = datetime.utcnow()
+                    self._birdnet_logger.info(
+                        "Recording segment finished sample_count=%s duration=%.2fs sample_rate=%s channels=%s device=%s peak_amplitude=%.6f manual_stop_requested=%s",
+                        int(np.asarray(capture.samples).shape[0]),
+                        max((ended_at - started_at).total_seconds(), 0.0),
+                        capture.sample_rate,
+                        capture.channels,
+                        capture.device_name or "unknown",
+                        peak_amplitude(capture.samples),
+                        self._manual_stop_is_requested(),
+                    )
 
                     if capture.samples.size == 0:
+                        self._birdnet_logger.warning(
+                            "Recording segment produced no audio samples mode=%s duration=%.2fs device=%s",
+                            capture_mode,
+                            max((ended_at - started_at).total_seconds(), 0.0),
+                            capture.device_name or "unknown",
+                        )
                         self._clear_manual_stop()
                         next_manual_mode = self._manual_requested()
                         next_reason = "manual-armed" if next_manual_mode else ("schedule" if active_schedule_names else "idle")
@@ -489,6 +518,14 @@ class RecordingManager:
                         processing_stage="saving-results",
                         processing_message="Saving recording metadata, BirdNET detections, and clip references to the timeline.",
                     )
+                    self._birdnet_logger.info(
+                        "Persisting timeline entry file=%s duration=%.2fs detections=%s clips=%s has_bird_activity=%s",
+                        file_path,
+                        max((ended_at - started_at).total_seconds(), 0.0),
+                        len(timeline_detections),
+                        len(created_clip_paths),
+                        bool(species_predictions),
+                    )
                     recording = Recording(
                         file_path=str(file_path),
                         started_at=started_at,
@@ -549,6 +586,7 @@ class RecordingManager:
                     for clip_path in created_clip_paths:
                         try:
                             clip_path.unlink(missing_ok=True)
+                            self._birdnet_logger.warning("Removed partially created BirdNET clip after failure path=%s", clip_path)
                         except OSError:
                             pass
                     db.session.rollback()

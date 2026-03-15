@@ -102,14 +102,31 @@ class BirdNetSpeciesClassifier:
             self._min_confidence,
             self._recording_buffer_cls is not None,
         )
+        self._logger.info(
+            "BirdNET classes analyzer=%s recording=%s recording_buffer=%s",
+            self._analyzer.__class__.__name__,
+            self._recording_cls.__name__,
+            self._recording_buffer_cls.__name__ if self._recording_buffer_cls is not None else "unavailable",
+        )
 
     def available(self) -> bool:
         return True
 
     def _analyze_detections(self, file_path: Path, kwargs: dict[str, object]) -> list[dict[str, object]]:
+        self._logger.info(
+            "BirdNET file analysis attempt path=%s kwargs=%s",
+            file_path,
+            _serialize_birdnet_kwargs(kwargs),
+        )
         recording = self._recording_cls(self._analyzer, str(file_path), **kwargs)
         recording.analyze()
-        return list(getattr(recording, "detections", []))
+        detections = list(getattr(recording, "detections", []))
+        self._logger.info(
+            "BirdNET file analysis completed path=%s raw_detection_count=%s",
+            file_path,
+            len(detections),
+        )
+        return detections
 
     def _analyze_buffer_detections(
         self,
@@ -120,20 +137,38 @@ class BirdNetSpeciesClassifier:
         if self._recording_buffer_cls is None:
             raise RuntimeError("birdnetlib does not expose RecordingBuffer in this runtime.")
 
+        self._logger.info(
+            "BirdNET buffer analysis preparing sample_rate=%s kwargs=%s sample_summary=%s",
+            sample_rate,
+            _serialize_birdnet_kwargs(kwargs),
+            _summarize_audio_samples(samples, sample_rate),
+        )
+
         attempts = [
-            lambda: self._recording_buffer_cls(self._analyzer, samples, sample_rate=sample_rate, **kwargs),
-            lambda: self._recording_buffer_cls(self._analyzer, samples, samplerate=sample_rate, **kwargs),
-            lambda: self._recording_buffer_cls(self._analyzer, samples, sr=sample_rate, **kwargs),
-            lambda: self._recording_buffer_cls(self._analyzer, samples, sample_rate, **kwargs),
+            ("sample_rate keyword", lambda: self._recording_buffer_cls(self._analyzer, samples, sample_rate=sample_rate, **kwargs)),
+            ("samplerate keyword", lambda: self._recording_buffer_cls(self._analyzer, samples, samplerate=sample_rate, **kwargs)),
+            ("sr keyword", lambda: self._recording_buffer_cls(self._analyzer, samples, sr=sample_rate, **kwargs)),
+            ("positional sample rate", lambda: self._recording_buffer_cls(self._analyzer, samples, sample_rate, **kwargs)),
         ]
         errors: list[str] = []
-        for attempt in attempts:
+        for attempt_name, attempt in attempts:
             try:
+                self._logger.info("BirdNET buffer analysis attempt=%s", attempt_name)
                 recording = attempt()
                 recording.analyze()
-                return list(getattr(recording, "detections", []))
+                detections = list(getattr(recording, "detections", []))
+                self._logger.info(
+                    "BirdNET buffer analysis succeeded attempt=%s raw_detection_count=%s",
+                    attempt_name,
+                    len(detections),
+                )
+                return detections
             except TypeError as exc:
-                errors.append(str(exc))
+                self._logger.warning("BirdNET buffer analysis constructor rejected attempt=%s error=%s", attempt_name, exc)
+                errors.append(f"{attempt_name}: {exc}")
+            except Exception as exc:
+                self._logger.warning("BirdNET buffer analysis failed attempt=%s error=%s", attempt_name, exc)
+                errors.append(f"{attempt_name}: {exc}")
 
         raise RuntimeError(
             "BirdNET in-memory buffer fallback could not be constructed. "
@@ -171,6 +206,12 @@ class BirdNetSpeciesClassifier:
         if recorded_at is not None:
             kwargs["date"] = recorded_at
 
+        self._logger.info(
+            "BirdNET classify request source=%s exists=%s kwargs=%s",
+            file_path,
+            file_path.exists(),
+            _serialize_birdnet_kwargs(kwargs),
+        )
         audio_details = _safe_describe_audio_file(file_path)
         if audio_details is not None:
             self._logger.info(
@@ -197,6 +238,7 @@ class BirdNetSpeciesClassifier:
             fallback_path: Path | None = None
             try:
                 raw_detections = self._analyze_detections(file_path, kwargs)
+                self._logger.info("BirdNET path strategy succeeded strategy=direct-file path=%s", file_path)
             except Exception as exc:
                 if not _is_audio_format_error(exc):
                     raise
@@ -221,6 +263,7 @@ class BirdNetSpeciesClassifier:
                 )
                 try:
                     raw_detections = self._analyze_detections(fallback_path, kwargs)
+                    self._logger.info("BirdNET path strategy succeeded strategy=fallback-wav path=%s", fallback_path)
                 except Exception as fallback_exc:
                     if not _is_audio_format_error(fallback_exc):
                         raise
@@ -232,17 +275,27 @@ class BirdNetSpeciesClassifier:
                         int(buffer_samples.shape[0]),
                         buffer_sample_rate,
                     )
+                    self._logger.info(
+                        "BirdNET fallback buffer stats %s",
+                        _summarize_audio_samples(buffer_samples, buffer_sample_rate),
+                    )
                     raw_detections = self._analyze_buffer_detections(
                         buffer_samples,
                         buffer_sample_rate,
                         kwargs,
                     )
+                    self._logger.info("BirdNET path strategy succeeded strategy=in-memory-buffer source=%s", fallback_path)
             finally:
                 if fallback_path is not None:
                     try:
                         fallback_path.unlink(missing_ok=True)
+                        self._logger.info("Removed temporary BirdNET fallback WAV %s", fallback_path)
                     except OSError:
                         pass
+
+            self._logger.info("BirdNET raw detections received count=%s", len(raw_detections))
+            for index, item in enumerate(raw_detections, start=1):
+                self._logger.info("BirdNET raw detection %s payload=%s", index, _compact_detection_payload(item))
 
             predictions: list[SpeciesPrediction] = []
             for item in raw_detections:
@@ -312,7 +365,13 @@ class BirdNetSpeciesClassifier:
                 "species": [],
                 "error": str(exc),
             }
-            self._logger.exception("BirdNET analysis failed for %s after %.2fs.", file_path, duration_seconds)
+            self._logger.exception(
+                "BirdNET analysis failed for %s after %.2fs kwargs=%s runtime=%s",
+                file_path,
+                duration_seconds,
+                _serialize_birdnet_kwargs(kwargs),
+                self.runtime_details,
+            )
             raise
 
 
@@ -438,3 +497,55 @@ def _safe_describe_audio_file(file_path: Path) -> dict[str, object] | None:
         return describe_audio_file(file_path)
     except Exception:
         return None
+
+
+def _serialize_birdnet_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
+    serialized: dict[str, object] = {}
+    for key, value in kwargs.items():
+        if isinstance(value, datetime):
+            serialized[key] = value.isoformat()
+        else:
+            serialized[key] = value
+    return serialized
+
+
+def _summarize_audio_samples(samples: np.ndarray, sample_rate: int) -> dict[str, object]:
+    flattened = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if flattened.size == 0:
+        return {
+            "sample_rate": sample_rate,
+            "sample_count": 0,
+            "duration_seconds": 0.0,
+            "peak": 0.0,
+            "rms": 0.0,
+            "dtype": str(np.asarray(samples).dtype),
+        }
+
+    peak = float(np.max(np.abs(flattened)))
+    rms = float(np.sqrt(np.mean(np.square(flattened))))
+    return {
+        "sample_rate": sample_rate,
+        "sample_count": int(flattened.size),
+        "duration_seconds": float(flattened.size / max(sample_rate, 1)),
+        "peak": round(peak, 6),
+        "rms": round(rms, 6),
+        "dtype": str(np.asarray(samples).dtype),
+    }
+
+
+def _compact_detection_payload(item: dict[str, object]) -> dict[str, object]:
+    keys = (
+        "common_name",
+        "scientific_name",
+        "label",
+        "confidence",
+        "start_time",
+        "end_time",
+    )
+    payload = {key: item.get(key) for key in keys if key in item}
+    if not payload:
+        return dict(item)
+    extra_keys = sorted(key for key in item.keys() if key not in payload)
+    if extra_keys:
+        payload["extra_keys"] = extra_keys
+    return payload

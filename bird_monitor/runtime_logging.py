@@ -38,6 +38,10 @@ class RecentLogBuffer:
                 return []
             return list(self._entries)[-limit:]
 
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
 
 class RecentLogBufferHandler(logging.Handler):
     def __init__(self, buffer: RecentLogBuffer) -> None:
@@ -57,6 +61,36 @@ def get_recent_birdnet_logs(limit: int = 80) -> list[dict[str, str]]:
 
 def get_birdnet_logger() -> logging.Logger:
     return logging.getLogger("bird_monitor.birdnet")
+
+
+def get_application_logger() -> logging.Logger:
+    return logging.getLogger("bird_monitor")
+
+
+def clear_application_logs() -> dict[str, object]:
+    cleared_files: list[str] = []
+    removed_backups: list[str] = []
+    seen_files: set[str] = set()
+
+    for logger in (get_application_logger(), get_birdnet_logger()):
+        for handler in logger.handlers:
+            if not isinstance(handler, RotatingFileHandler):
+                continue
+            base_filename = getattr(handler, "baseFilename", "")
+            if not base_filename or base_filename in seen_files:
+                continue
+            _truncate_rotating_handler(handler)
+            seen_files.add(base_filename)
+            cleared_files.append(base_filename)
+            removed_backups.extend(_remove_rotated_backup_files(base_filename))
+
+    _birdnet_buffer.clear()
+    return {
+        "cleared_files": cleared_files,
+        "removed_backup_files": removed_backups,
+        "cleared_count": len(cleared_files),
+        "removed_backup_count": len(removed_backups),
+    }
 
 
 def configure_application_logging(app: Flask) -> None:
@@ -98,3 +132,31 @@ def configure_application_logging(app: Flask) -> None:
     app.extensions["birdnet_logging_configured"] = True
     app.config["BIRDNET_LOG_FILE"] = str(birdnet_log_file)
     app.config["APP_LOG_FILE"] = str(application_log_file)
+
+
+def _truncate_rotating_handler(handler: RotatingFileHandler) -> None:
+    handler.acquire()
+    try:
+        if handler.stream is None:
+            handler.stream = handler._open()
+        handler.stream.flush()
+        handler.stream.seek(0)
+        handler.stream.truncate()
+    finally:
+        handler.release()
+
+
+def _remove_rotated_backup_files(base_filename: str) -> list[str]:
+    base_path = Path(base_filename)
+    removed: list[str] = []
+
+    for candidate in sorted(base_path.parent.glob(f"{base_path.name}.*")):
+        if not candidate.is_file():
+            continue
+        try:
+            candidate.unlink()
+        except OSError:
+            continue
+        removed.append(str(candidate))
+
+    return removed

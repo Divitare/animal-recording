@@ -13,6 +13,8 @@ const dashboardState = {
   birdnetLogs: [],
   birdnetLogFile: null,
   birdnetLogAutoFollow: true,
+  birdnetLogStatusMessage: "Logs are kept live here for BirdNET analysis and recorder activity.",
+  birdnetLogStatusTone: "info",
   livePollHandle: null,
   zoomFactor: 1,
   timelineDragPointerId: null,
@@ -69,7 +71,9 @@ const dashboardElements = {
   birdnetLastTargetState: document.querySelector("#birdnet-last-target-state"),
   birdnetPackageSummary: document.querySelector("#birdnet-package-summary"),
   birdnetLogPath: document.querySelector("#birdnet-log-path"),
+  birdnetLogStatus: document.querySelector("#birdnet-log-status"),
   birdnetLogConsole: document.querySelector("#birdnet-log-console"),
+  clearLogsButton: document.querySelector("#clear-logs-button"),
 };
 
 function dashboardFetchJson(url, options = {}) {
@@ -90,6 +94,13 @@ function dashboardFetchJson(url, options = {}) {
 
 function dashboardShowError(error) {
   dashboardElements.serviceError.textContent = error.message || String(error);
+}
+
+function dashboardShowLogStatus(message, tone = "info") {
+  dashboardState.birdnetLogStatusMessage = message;
+  dashboardState.birdnetLogStatusTone = tone;
+  dashboardElements.birdnetLogStatus.textContent = message;
+  dashboardElements.birdnetLogStatus.dataset.tone = tone;
 }
 
 function dashboardDatetimeLocalValue(date) {
@@ -169,6 +180,33 @@ function dashboardBindEvents() {
       dashboardRenderService(payload.service);
     } catch (error) {
       dashboardShowError(error);
+    }
+  });
+
+  dashboardElements.clearLogsButton.addEventListener("click", async () => {
+    const confirmed = window.confirm("Delete the BirdNET and application log files now?");
+    if (!confirmed) {
+      return;
+    }
+
+    const originalLabel = dashboardElements.clearLogsButton.textContent;
+    dashboardElements.clearLogsButton.disabled = true;
+    dashboardElements.clearLogsButton.textContent = "Deleting...";
+    try {
+      const payload = await dashboardFetchJson("/api/birdnet/logs/clear", { method: "POST" });
+      dashboardState.birdnetLogs = [];
+      dashboardState.birdnetLogAutoFollow = true;
+      dashboardRenderBirdnetLogs({ items: [] });
+      dashboardShowLogStatus(
+        `${payload.message} Cleared ${payload.cleared_count || 0} active file(s) and ${payload.removed_backup_count || 0} rotated backup file(s).`,
+        "success",
+      );
+    } catch (error) {
+      dashboardShowError(error);
+      dashboardShowLogStatus(`Log deletion failed: ${error.message || String(error)}`, "error");
+    } finally {
+      dashboardElements.clearLogsButton.disabled = false;
+      dashboardElements.clearLogsButton.textContent = originalLabel;
     }
   });
 
@@ -492,6 +530,7 @@ function dashboardRenderBirdnetRuntime(service) {
   dashboardElements.birdnetLogPath.textContent = service.birdnet_log_file
     ? `BirdNET log: ${service.birdnet_log_file}${service.app_log_file ? ` | App log: ${service.app_log_file}` : ""}`
     : "BirdNET log file path is not available yet.";
+  dashboardShowLogStatus(dashboardState.birdnetLogStatusMessage, dashboardState.birdnetLogStatusTone);
 
   if (available) {
     dashboardElements.birdnetRuntimeSummary.textContent = service.processing_stage === "analyzing"
