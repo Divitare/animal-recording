@@ -48,6 +48,8 @@ const dashboardElements = {
   activityMode: document.querySelector("#activity-mode"),
   liveLevel: document.querySelector("#live-level"),
   waveformCanvas: document.querySelector("#waveform-canvas"),
+  liveDetectionsSummary: document.querySelector("#live-detections-summary"),
+  liveDetectionsList: document.querySelector("#live-detections-list"),
   serviceError: document.querySelector("#service-error"),
   totalRecordings: document.querySelector("#total-recordings"),
   totalDetections: document.querySelector("#total-detections"),
@@ -354,11 +356,16 @@ function dashboardRenderService(service) {
   const manualMode = Boolean(service.manual_mode);
   const reason = service.activity_reason || "idle";
   const activeSchedules = service.active_schedule_names || [];
+  const liveBirdnetActive = Boolean(service.birdnet_live_analysis_active);
 
   if (reason === "manual" || reason === "manual-armed") {
-    dashboardElements.serviceState.textContent = isRecording ? "Manual recording" : "Manual ready";
+    dashboardElements.serviceState.textContent = isRecording
+      ? (liveBirdnetActive ? "Manual + BirdNET" : "Manual recording")
+      : "Manual ready";
   } else if (reason === "schedule") {
-    dashboardElements.serviceState.textContent = isRecording ? "Scheduled recording" : "Watching schedule";
+    dashboardElements.serviceState.textContent = isRecording
+      ? (liveBirdnetActive ? "Scheduled + BirdNET" : "Scheduled recording")
+      : "Watching schedule";
   } else if (reason === "analyzing") {
     dashboardElements.serviceState.textContent = "BirdNET analyzing";
   } else {
@@ -367,7 +374,7 @@ function dashboardRenderService(service) {
 
   dashboardElements.serviceState.classList.toggle("is-recording", isRecording);
   dashboardElements.serviceState.classList.toggle("is-manual", reason === "manual" || reason === "manual-armed");
-  dashboardElements.serviceState.classList.toggle("is-processing", reason === "analyzing");
+  dashboardElements.serviceState.classList.toggle("is-processing", reason === "analyzing" || liveBirdnetActive);
   dashboardElements.serviceSummary.textContent = service.activity_message || "Waiting for recorder state...";
   dashboardElements.activityMessage.textContent = service.activity_message || "Waiting for recorder state...";
   dashboardElements.activityDetail.textContent = dashboardBuildActivityDetail(service, activeSchedules);
@@ -379,6 +386,7 @@ function dashboardRenderService(service) {
   dashboardElements.manualStartButton.disabled = manualMode;
   dashboardElements.manualStopButton.disabled = !manualMode;
 
+  dashboardRenderLiveDetections(service);
   dashboardRenderPipeline(service);
   dashboardRenderBirdnetRuntime(service);
   dashboardRenderWaveform(service.waveform_samples || []);
@@ -386,7 +394,7 @@ function dashboardRenderService(service) {
 
 function dashboardBuildSpeciesState(service) {
   if (service.species_enabled) {
-    return "BirdNET species detection active after each segment";
+    return "BirdNET species detection active every 9 seconds during recording";
   }
   if (service.species_provider === "birdnet") {
     return service.species_available === false ? "BirdNET unavailable" : "BirdNET selected";
@@ -405,12 +413,50 @@ function dashboardBuildServiceProblems(service) {
   return messages.join(" ");
 }
 
+function dashboardRenderLiveDetections(service) {
+  const items = service.live_detections || [];
+  const liveWindowSeconds = Number(service.birdnet_live_window_seconds || 9);
+  const pendingWindows = Number(service.birdnet_live_pending_windows || 0);
+  const completedWindows = Number(service.birdnet_live_completed_windows || 0);
+
+  dashboardElements.liveDetectionsSummary.textContent = service.is_recording
+    ? `BirdNET checks each finished ${liveWindowSeconds}-second window while the recording continues. ${completedWindows} window(s) completed, ${pendingWindows} pending.`
+    : "BirdNET checks each finished 9-second window while the recording continues.";
+
+  dashboardElements.liveDetectionsList.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state live-detections-empty";
+    empty.textContent = service.is_recording
+      ? "No live BirdNET detections yet for this recording."
+      : "No live BirdNET detections yet.";
+    dashboardElements.liveDetectionsList.append(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const row = document.createElement("article");
+    row.className = "live-detection-item";
+    row.innerHTML = `
+      <div class="live-detection-main">
+        <strong>${item.species_common_name || "Bird detection"}</strong>
+        ${item.species_scientific_name ? `<span class="species-scientific">${item.species_scientific_name}</span>` : ""}
+        <span>${dashboardFormatDateTime(item.started_at)} - ${dashboardFormatDateTime(item.ended_at)}</span>
+      </div>
+      <div class="live-detection-meta">
+        <span>${Math.round((Number(item.confidence || 0)) * 100)}% confidence</span>
+      </div>
+    `;
+    dashboardElements.liveDetectionsList.append(row);
+  });
+}
+
 function dashboardBuildActivityDetail(service, activeSchedules) {
   if (service.activity_reason === "analyzing") {
-    return service.processing_message || "BirdNET is checking the finished segment now.";
+    return service.processing_message || "BirdNET is finishing the last live windows now.";
   }
   if (service.activity_reason === "manual" || service.activity_reason === "manual-armed" || service.manual_mode) {
-    return "Manual control overrides the schedule until you press Stop.";
+    return "Manual control overrides the schedule until you press Stop. BirdNET keeps checking finished 9-second windows while recording continues.";
   }
   if (activeSchedules.length) {
     return `Active schedules: ${activeSchedules.join(", ")}`;
@@ -423,7 +469,7 @@ function dashboardBuildActivityDetail(service, activeSchedules) {
 
 function dashboardBuildModeLabel(reason, manualMode, isRecording) {
   if (reason === "analyzing") {
-    return "BirdNET post-processing";
+    return "BirdNET finalizing live windows";
   }
   if (reason === "manual" || reason === "manual-armed" || manualMode) {
     return isRecording ? "Manual mode live" : "Manual mode armed";
@@ -440,33 +486,40 @@ function dashboardRenderPipeline(service) {
   const clipCount = Number(service.last_clip_count || 0);
   const detectionCount = Number(service.last_detection_count || 0);
   const detectedSpecies = (service.last_detected_species || []).join(", ");
+  const pendingLiveWindows = Number(service.birdnet_live_pending_windows || 0);
+  const liveDetectionCount = Number(service.live_detection_count || 0);
+  const liveDetectedSpecies = (service.live_detected_species || []).join(", ");
 
-  dashboardElements.pipelineModeNote.textContent = service.birdnet_matches_after_recording
-    ? "BirdNET checks each finished segment after recording stops. Matching is not real time."
+  dashboardElements.pipelineModeNote.textContent = service.species_enabled
+    ? `BirdNET checks each finished ${service.birdnet_live_window_seconds || 9}-second window while the recording keeps running.`
     : "BirdNET matching mode is unavailable.";
 
   dashboardSetPipelineCard(
     dashboardElements.pipelineRecordingCard,
     dashboardElements.pipelineRecordingState,
     dashboardElements.pipelineRecordingDetail,
-    service.is_recording ? "Capturing audio" : "Waiting for next segment",
+    service.is_recording ? "Capturing audio" : "Waiting for next recording",
     service.is_recording
       ? "The microphone is recording right now."
-      : (service.current_device_name || "BirdNET starts only after a finished segment is saved."),
+      : (service.current_device_name || "BirdNET starts once recording begins."),
     service.is_recording,
     false,
   );
 
   const birdnetUnavailable = service.species_provider === "birdnet" && service.species_available === false;
-  const birdnetActive = processingStage === "analyzing";
+  const birdnetActive = Boolean(service.birdnet_live_analysis_active) || processingStage === "analyzing";
   dashboardSetPipelineCard(
     dashboardElements.pipelineBirdnetCard,
     dashboardElements.pipelineBirdnetState,
     dashboardElements.pipelineBirdnetDetail,
-    birdnetUnavailable ? "Unavailable" : (birdnetActive ? "Analyzing segment" : "Waiting for next segment"),
+    birdnetUnavailable ? "Unavailable" : (birdnetActive ? "Analyzing live window" : "Waiting for next window"),
     birdnetUnavailable
       ? (service.species_error || "BirdNET could not be loaded.")
-      : (birdnetActive ? (service.processing_message || "BirdNET is checking the last finished segment.") : "BirdNET starts only after a segment stops."),
+      : (
+        birdnetActive
+          ? (service.processing_message || "BirdNET is checking the newest finished 9-second window.")
+          : "BirdNET analyzes each finished 9-second window while recording keeps going."
+      ),
     birdnetActive,
     birdnetUnavailable,
   );
@@ -488,10 +541,12 @@ function dashboardRenderPipeline(service) {
     dashboardElements.pipelineResultCard,
     dashboardElements.pipelineResultState,
     dashboardElements.pipelineResultDetail,
-    detectionCount > 0 ? `${detectionCount} detection(s)` : "No detections in last run",
-    detectionCount > 0 && detectedSpecies
-      ? `${lastSummary} Species: ${detectedSpecies}.`
-      : lastSummary,
+    liveDetectionCount > 0
+      ? `${liveDetectionCount} live detection(s)`
+      : (detectionCount > 0 ? `${detectionCount} saved detection(s)` : "No detections yet"),
+    liveDetectionCount > 0 && liveDetectedSpecies
+      ? `Live updates so far: ${liveDetectedSpecies}. Pending BirdNET windows: ${pendingLiveWindows}.`
+      : (detectionCount > 0 && detectedSpecies ? `${lastSummary} Species: ${detectedSpecies}.` : lastSummary),
     false,
     false,
   );
@@ -536,9 +591,9 @@ function dashboardRenderBirdnetRuntime(service) {
   dashboardShowLogStatus(dashboardState.birdnetLogStatusMessage, dashboardState.birdnetLogStatusTone);
 
   if (available) {
-    dashboardElements.birdnetRuntimeSummary.textContent = service.processing_stage === "analyzing"
-      ? "BirdNET is installed and actively analyzing the last finished segment right now."
-      : "BirdNET is installed. It runs after a recording segment finishes and logs every analysis step below.";
+    dashboardElements.birdnetRuntimeSummary.textContent = service.birdnet_live_analysis_active
+      ? "BirdNET is installed and actively analyzing the newest finished 9-second window right now."
+      : "BirdNET is installed. It analyzes finished 9-second windows during recording and logs every analysis step below.";
     return;
   }
 
@@ -721,7 +776,7 @@ function dashboardRenderTimeline() {
   }
 
   const totalDetections = dashboardState.detections.length;
-  dashboardElements.timelineSummary.textContent = `${dashboardState.recordings.length} recording segment(s), ${totalDetections} BirdNET detection(s), and ${dashboardState.speciesEvents.length} merged event(s) between ${dashboardFormatDateTime(dashboardState.range.start)} and ${dashboardFormatDateTime(dashboardState.range.end)}.`;
+  dashboardElements.timelineSummary.textContent = `${dashboardState.recordings.length} recording(s), ${totalDetections} BirdNET detection(s), and ${dashboardState.speciesEvents.length} merged event(s) between ${dashboardFormatDateTime(dashboardState.range.start)} and ${dashboardFormatDateTime(dashboardState.range.end)}.`;
   dashboardUpdateZoomLabel();
 
   if (!dashboardState.recordings.length && !dashboardState.detections.length) {

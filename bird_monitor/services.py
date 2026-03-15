@@ -3,7 +3,9 @@ from __future__ import annotations
 import atexit
 import re
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,18 +13,77 @@ import numpy as np
 from flask import Flask
 
 from .audio import (
-    extract_clip_samples,
+    extract_clip_to_file,
     list_input_devices,
-    peak_amplitude,
-    record_segment,
-    save_audio_samples,
-    save_capture,
+    record_continuous_session,
 )
 from .extensions import db
 from .models import BirdDetection, RecorderSettings, Recording, RecordingSchedule, utc_iso
 from .runtime_logging import get_birdnet_logger
 from .scheduler import get_active_windows
-from .species import SpeciesPrediction, build_species_classifier
+from .species import build_species_classifier
+
+LIVE_BIRDNET_WINDOW_SECONDS = 9
+MINIMUM_LIVE_ANALYSIS_SECONDS = 3
+LIVE_DETECTION_PREVIEW_LIMIT = 10
+
+
+@dataclass(frozen=True)
+class SessionSpeciesDetection:
+    started_at: datetime
+    ended_at: datetime
+    confidence: float
+    species_common_name: str
+    species_scientific_name: str | None
+
+
+class AnalysisWindowAccumulator:
+    def __init__(self, window_frames: int) -> None:
+        self.window_frames = window_frames
+        self._chunks: deque[np.ndarray] = deque()
+        self._frame_count = 0
+
+    def push(self, chunk: np.ndarray) -> list[np.ndarray]:
+        prepared = np.asarray(chunk, dtype=np.float32).copy()
+        if prepared.ndim == 1:
+            prepared = prepared.reshape(-1, 1)
+
+        self._chunks.append(prepared)
+        self._frame_count += int(prepared.shape[0])
+
+        windows: list[np.ndarray] = []
+        while self._frame_count >= self.window_frames:
+            windows.append(self._pop_frames(self.window_frames))
+        return windows
+
+    def flush_remainder(self, min_frames: int) -> np.ndarray | None:
+        if self._frame_count < min_frames:
+            return None
+        return self._pop_frames(self._frame_count)
+
+    def _pop_frames(self, frame_count: int) -> np.ndarray:
+        remaining_frames = frame_count
+        pieces: list[np.ndarray] = []
+
+        while remaining_frames > 0 and self._chunks:
+            chunk = self._chunks[0]
+            chunk_frames = int(chunk.shape[0])
+            if chunk_frames <= remaining_frames:
+                pieces.append(chunk)
+                self._chunks.popleft()
+                remaining_frames -= chunk_frames
+                continue
+
+            pieces.append(chunk[:remaining_frames].copy())
+            self._chunks[0] = chunk[remaining_frames:].copy()
+            remaining_frames = 0
+
+        consumed_frames = frame_count - remaining_frames
+        self._frame_count = max(self._frame_count - consumed_frames, 0)
+
+        if not pieces:
+            return np.zeros((0, 1), dtype=np.float32)
+        return np.concatenate(pieces, axis=0)
 
 
 class RecordingManager:
@@ -35,6 +96,7 @@ class RecordingManager:
         self._waveform_lock = threading.Lock()
         self._birdnet_logger = get_birdnet_logger()
         self._species_classifier = build_species_classifier()
+        self._analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="birdnet-live")
         runtime_details = self._runtime_details()
         self._manual_mode = False
         self._manual_stop_requested = False
@@ -60,8 +122,19 @@ class RecordingManager:
             "birdnet_runtime_details": runtime_details,
             "birdnet_log_file": self.app.config.get("BIRDNET_LOG_FILE"),
             "app_log_file": self.app.config.get("APP_LOG_FILE"),
+            "birdnet_live_window_seconds": LIVE_BIRDNET_WINDOW_SECONDS,
+            "birdnet_live_interval_seconds": LIVE_BIRDNET_WINDOW_SECONDS,
+            "birdnet_live_analysis_enabled": self._species_classifier.available(),
+            "birdnet_live_analysis_active": False,
+            "birdnet_live_pending_windows": 0,
+            "birdnet_live_completed_windows": 0,
+            "birdnet_live_last_window_started_at": None,
+            "birdnet_live_last_window_ended_at": None,
+            "live_detection_count": 0,
+            "live_detected_species": [],
+            "live_detections": [],
             "processing_stage": "idle",
-            "processing_message": "Recorder is waiting. BirdNET analyzes finished segments after recording stops.",
+            "processing_message": "Recorder is waiting. BirdNET checks each finished 9-second window while recording continues.",
             "last_processing_summary": "No BirdNET analysis has completed yet.",
             "last_detection_count": 0,
             "last_clip_count": 0,
@@ -72,7 +145,7 @@ class RecordingManager:
             "birdnet_last_analysis_duration_seconds": None,
             "birdnet_last_raw_detection_count": 0,
             "birdnet_last_merged_detection_count": 0,
-            "birdnet_matches_after_recording": True,
+            "birdnet_matches_after_recording": False,
         }
         self._birdnet_logger.info(
             "Recording manager started. BirdNET available=%s provider=%s backend=%s reason=%s",
@@ -92,6 +165,7 @@ class RecordingManager:
         self._stop_event.set()
         if self._thread.is_alive():
             self._thread.join(timeout=5)
+        self._analysis_executor.shutdown(wait=False, cancel_futures=False)
 
     def request_manual_start(self) -> None:
         with self._manual_lock:
@@ -101,9 +175,9 @@ class RecordingManager:
         self._set_status(
             manual_mode=True,
             activity_reason="manual-armed",
-            activity_message="Manual recording requested. The next segment will start immediately.",
+            activity_message="Manual recording requested. Recording will continue until you press Stop.",
             processing_stage="armed",
-            processing_message="Manual recording is armed. BirdNET will analyze the segment after it ends.",
+            processing_message="Manual recording is armed. BirdNET will analyze each finished 9-second window while recording continues.",
             last_error=None,
         )
 
@@ -115,7 +189,7 @@ class RecordingManager:
         self._set_status(
             manual_mode=False,
             activity_message="Stopping manual recording...",
-            processing_message="Stopping the current manual workflow...",
+            processing_message="Stopping the current recording and finishing any pending BirdNET windows...",
         )
 
     def get_status(self, include_devices: bool = True) -> dict[str, object]:
@@ -174,11 +248,6 @@ class RecordingManager:
 
         self._set_status(live_level=max(values))
 
-    def _recording_should_stop(self, mode: str) -> bool:
-        if self._stop_event.is_set():
-            return True
-        return mode == "manual" and self._manual_stop_is_requested()
-
     def _species_state(self, settings: RecorderSettings) -> tuple[str, bool, bool, str | None]:
         requested_provider = (settings.species_provider or "disabled").strip().casefold()
         species_available = self._species_classifier.available()
@@ -191,7 +260,7 @@ class RecordingManager:
     def _runtime_details(self) -> dict[str, object]:
         details = dict(getattr(self._species_classifier, "runtime_details", {}) or {})
         details.setdefault("provider", "birdnet")
-        details.setdefault("analysis_mode", "post-recording")
+        details["analysis_mode"] = "continuous-live-9-second-windows"
         details.setdefault("available", self._species_classifier.available())
         if not details.get("reason") and getattr(self._species_classifier, "failure_reason", None):
             details["reason"] = getattr(self._species_classifier, "failure_reason")
@@ -200,18 +269,18 @@ class RecordingManager:
     def _analysis_details(self) -> dict[str, object]:
         return dict(getattr(self._species_classifier, "last_analysis_details", {}) or {})
 
-    def _build_recording_summary(self, predictions: list[SpeciesPrediction]) -> tuple[str, list[str]]:
-        if not predictions:
-            return "BirdNET finished. No bird species were detected in the last segment.", []
+    def _build_recording_summary(self, detections: list[SessionSpeciesDetection]) -> tuple[str, list[str]]:
+        if not detections:
+            return "BirdNET finished. No bird species were detected in the last recording.", []
 
         ordered_names: list[str] = []
-        for prediction in sorted(predictions, key=lambda item: item.confidence, reverse=True):
-            if prediction.common_name not in ordered_names:
-                ordered_names.append(prediction.common_name)
+        for detection in sorted(detections, key=lambda item: item.confidence, reverse=True):
+            if detection.species_common_name not in ordered_names:
+                ordered_names.append(detection.species_common_name)
 
         top_names = ", ".join(ordered_names[:4])
         summary = (
-            f"BirdNET found {len(predictions)} detected bird occurrence(s) "
+            f"BirdNET found {len(detections)} detected bird occurrence(s) "
             f"across {len(ordered_names)} species: {top_names}."
         )
         return summary, ordered_names
@@ -223,68 +292,141 @@ class RecordingManager:
         filename = f"detection_{detected_at.strftime('%Y%m%dT%H%M%S_%f')}_{detection_index:02d}_{safe_name}.wav"
         return day_path / filename
 
+    def _mix_to_mono(self, samples: np.ndarray) -> np.ndarray:
+        prepared = np.asarray(samples, dtype=np.float32)
+        if prepared.ndim == 2:
+            prepared = np.mean(prepared, axis=1, dtype=np.float32)
+        return np.ascontiguousarray(prepared.reshape(-1))
+
+    def _unique_species_names(self, detections: list[SessionSpeciesDetection]) -> list[str]:
+        ordered_names: list[str] = []
+        for detection in sorted(detections, key=lambda item: item.confidence, reverse=True):
+            if detection.species_common_name not in ordered_names:
+                ordered_names.append(detection.species_common_name)
+        return ordered_names
+
+    def _live_detection_preview(self, detections: list[SessionSpeciesDetection]) -> list[dict[str, object]]:
+        ordered = sorted(detections, key=lambda item: item.started_at, reverse=True)
+        return [
+            {
+                "started_at": utc_iso(item.started_at),
+                "ended_at": utc_iso(item.ended_at),
+                "species_common_name": item.species_common_name,
+                "species_scientific_name": item.species_scientific_name,
+                "confidence": item.confidence,
+            }
+            for item in ordered[:LIVE_DETECTION_PREVIEW_LIMIT]
+        ]
+
+    def _classify_live_window(
+        self,
+        *,
+        samples: np.ndarray,
+        sample_rate: int,
+        window_started_at: datetime,
+        latitude: float | None,
+        longitude: float | None,
+        min_confidence: float,
+        capture_mode: str,
+        window_index: int,
+    ) -> tuple[list[SessionSpeciesDetection], dict[str, object]]:
+        window_duration_seconds = float(np.asarray(samples).reshape(-1).shape[0] / max(sample_rate, 1))
+        window_ended_at = window_started_at + timedelta(seconds=window_duration_seconds)
+        self._birdnet_logger.info(
+            "Submitting live BirdNET window index=%s mode=%s started_at=%s ended_at=%s duration=%.2fs sample_rate=%s min_confidence=%.2f",
+            window_index,
+            capture_mode,
+            window_started_at.isoformat(),
+            window_ended_at.isoformat(),
+            window_duration_seconds,
+            sample_rate,
+            min_confidence,
+        )
+        predictions = self._species_classifier.classify_samples(
+            samples,
+            sample_rate=sample_rate,
+            latitude=latitude,
+            longitude=longitude,
+            recorded_at=window_started_at,
+            min_confidence=min_confidence,
+            source_label=f"live-window-{window_index:03d}",
+        )
+        detections = [
+            SessionSpeciesDetection(
+                started_at=window_started_at + timedelta(seconds=prediction.start_offset_seconds),
+                ended_at=window_started_at + timedelta(seconds=prediction.end_offset_seconds),
+                confidence=prediction.confidence,
+                species_common_name=prediction.common_name,
+                species_scientific_name=prediction.scientific_name,
+            )
+            for prediction in predictions
+        ]
+        summary = {
+            "window_index": window_index,
+            "window_started_at": utc_iso(window_started_at),
+            "window_ended_at": utc_iso(window_ended_at),
+            "window_duration_seconds": window_duration_seconds,
+            "detections": detections,
+            "species": self._unique_species_names(detections),
+        }
+        return detections, summary
+
     def _create_species_detections(
         self,
         *,
-        capture_samples: np.ndarray,
-        sample_rate: int,
+        recording_file_path: Path,
         recording_started_at: datetime,
-        predictions: list[SpeciesPrediction],
+        detections: list[SessionSpeciesDetection],
     ) -> tuple[list[BirdDetection], list[Path]]:
-        detections: list[BirdDetection] = []
+        timeline_detections: list[BirdDetection] = []
         clip_paths: list[Path] = []
 
-        for index, prediction in enumerate(predictions, start=1):
-            started_at = recording_started_at + timedelta(seconds=prediction.start_offset_seconds)
-            ended_at = recording_started_at + timedelta(seconds=prediction.end_offset_seconds)
-            clip_path = self._build_detection_clip_path(started_at, prediction.common_name, index)
-            clip_samples = extract_clip_samples(
-                capture_samples,
-                sample_rate,
-                prediction.start_offset_seconds,
-                prediction.end_offset_seconds,
-            )
-
+        for index, item in enumerate(detections, start=1):
+            clip_path = self._build_detection_clip_path(item.started_at, item.species_common_name, index)
             clip_file_path: str | None = None
             clip_duration_seconds: float | None = None
-            if clip_samples.size > 0:
-                save_audio_samples(clip_samples, sample_rate, clip_path)
+            clip_duration_seconds = extract_clip_to_file(
+                recording_file_path,
+                clip_path,
+                max((item.started_at - recording_started_at).total_seconds(), 0.0),
+                max((item.ended_at - recording_started_at).total_seconds(), 0.0),
+            )
+            if clip_duration_seconds is not None:
                 clip_paths.append(clip_path)
                 clip_file_path = str(clip_path)
-                clip_duration_seconds = float(clip_samples.shape[0] / max(sample_rate, 1))
                 self._birdnet_logger.info(
                     "Saved BirdNET clip %s species=%s confidence=%.3f start=%.2fs end=%.2fs path=%s",
                     index,
-                    prediction.common_name,
-                    prediction.confidence,
-                    prediction.start_offset_seconds,
-                    prediction.end_offset_seconds,
+                    item.species_common_name,
+                    item.confidence,
+                    max((item.started_at - recording_started_at).total_seconds(), 0.0),
+                    max((item.ended_at - recording_started_at).total_seconds(), 0.0),
                     clip_path,
                 )
             else:
                 self._birdnet_logger.warning(
                     "BirdNET clip %s for species=%s had no audio samples and was skipped.",
                     index,
-                    prediction.common_name,
+                    item.species_common_name,
                 )
 
-            detections.append(
+            timeline_detections.append(
                 BirdDetection(
                     recording_id=0,
-                    started_at=started_at,
-                    ended_at=ended_at,
-                    confidence=prediction.confidence,
+                    started_at=item.started_at,
+                    ended_at=item.ended_at,
+                    confidence=item.confidence,
                     dominant_frequency_hz=0.0,
                     source="birdnet",
-                    species_common_name=prediction.common_name,
-                    species_scientific_name=prediction.scientific_name,
-                    species_score=prediction.confidence,
+                    species_common_name=item.species_common_name,
+                    species_scientific_name=item.species_scientific_name,
+                    species_score=item.confidence,
                     clip_file_path=clip_file_path,
                     clip_duration_seconds=clip_duration_seconds,
                 )
             )
 
-        return detections, clip_paths
+        return timeline_detections, clip_paths
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -300,6 +442,9 @@ class RecordingManager:
                     birdnet_runtime_details=runtime_details,
                     birdnet_log_file=self.app.config.get("BIRDNET_LOG_FILE"),
                     app_log_file=self.app.config.get("APP_LOG_FILE"),
+                    birdnet_live_analysis_enabled=species_enabled,
+                    birdnet_live_window_seconds=LIVE_BIRDNET_WINDOW_SECONDS,
+                    birdnet_live_interval_seconds=LIVE_BIRDNET_WINDOW_SECONDS,
                 )
                 local_now = datetime.now().astimezone()
                 schedules = RecordingSchedule.query.filter_by(enabled=True).all()
@@ -315,8 +460,16 @@ class RecordingManager:
                         activity_reason="idle",
                         activity_message="Idle. Waiting for a schedule or a manual start.",
                         processing_stage="idle",
-                        processing_message="Recorder is waiting. BirdNET only runs after a finished recording segment is saved.",
+                        processing_message="Recorder is waiting. BirdNET checks each finished 9-second window while recording continues.",
                         segment_started_at=None,
+                        birdnet_live_analysis_active=False,
+                        birdnet_live_pending_windows=0,
+                        birdnet_live_completed_windows=0,
+                        birdnet_live_last_window_started_at=None,
+                        birdnet_live_last_window_ended_at=None,
+                        live_detection_count=0,
+                        live_detected_species=[],
+                        live_detections=[],
                         last_checked_at=utc_iso(datetime.utcnow()),
                     )
                     if self._stop_event.wait(1):
@@ -326,27 +479,172 @@ class RecordingManager:
                 active_schedule_names = [window.schedule.name for window in active_windows]
                 capture_mode = "manual" if manual_mode else "schedule"
                 if capture_mode == "manual":
-                    segment_seconds = max(1, settings.segment_seconds)
-                    activity_message = "Manual recording is active."
+                    activity_message = "Manual recording is active. It will continue until you press Stop."
                 else:
-                    seconds_until_boundary = min(
-                        max(1, int((window.ends_at - local_now).total_seconds()))
-                        for window in active_windows
+                    activity_message = (
+                        f"Scheduled recording is active: {', '.join(active_schedule_names)}. "
+                        "It will continue until the schedule window ends."
                     )
-                    segment_seconds = max(1, min(settings.segment_seconds, seconds_until_boundary))
-                    activity_message = f"Scheduled recording is active: {', '.join(active_schedule_names)}"
 
                 started_at = datetime.utcnow()
+                file_path = self._build_recording_path(started_at)
+                live_window_frames = max(1, int(settings.sample_rate * LIVE_BIRDNET_WINDOW_SECONDS))
+                minimum_live_frames = max(1, int(settings.sample_rate * MINIMUM_LIVE_ANALYSIS_SECONDS))
+                live_window_accumulator = AnalysisWindowAccumulator(live_window_frames)
+                session_lock = threading.Lock()
+                session_detections: list[SessionSpeciesDetection] = []
+                analysis_futures: set[Future] = set()
+                pending_window_count = 0
+                completed_window_count = 0
+                successful_window_count = 0
+                submitted_frames_total = 0
+                submitted_window_count = 0
+                live_failures: list[str] = []
+
+                def session_should_stop() -> bool:
+                    if self._stop_event.is_set():
+                        return True
+                    if capture_mode == "manual":
+                        return self._manual_stop_is_requested()
+                    return not bool(get_active_windows(schedules, datetime.now().astimezone()))
+
+                def refresh_live_status(message: str | None = None) -> None:
+                    with session_lock:
+                        detections_snapshot = list(session_detections)
+                        pending_count = pending_window_count
+                        completed_count = completed_window_count
+                    preview = self._live_detection_preview(detections_snapshot)
+                    self._set_status(
+                        birdnet_live_analysis_active=pending_count > 0,
+                        birdnet_live_pending_windows=pending_count,
+                        birdnet_live_completed_windows=completed_count,
+                        live_detection_count=len(detections_snapshot),
+                        live_detected_species=self._unique_species_names(detections_snapshot),
+                        live_detections=preview,
+                        processing_message=message
+                        or (
+                            "Recording audio now. BirdNET is analyzing each finished 9-second window in parallel."
+                            if pending_count > 0
+                            else "Recording audio now. BirdNET is caught up with the finished 9-second windows."
+                        ),
+                    )
+
+                def handle_live_window_completion(future: Future) -> None:
+                    nonlocal pending_window_count, completed_window_count, successful_window_count
+                    with session_lock:
+                        analysis_futures.discard(future)
+                    try:
+                        detections, summary = future.result()
+                    except Exception as exc:
+                        analysis_details = self._analysis_details()
+                        with session_lock:
+                            pending_window_count = max(pending_window_count - 1, 0)
+                            completed_window_count += 1
+                            live_failures.append(str(exc))
+                        self._set_status(
+                            species_error=f"Live BirdNET window failed: {exc}",
+                            last_species_analysis_error=f"Live BirdNET window failed: {exc}",
+                            birdnet_last_analysis_target=analysis_details.get("file_path"),
+                            birdnet_last_analysis_started_at=analysis_details.get("started_at"),
+                            birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
+                            birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
+                            birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
+                            birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
+                        )
+                        refresh_live_status(
+                            f"Recording audio now. One live BirdNET window failed, but recording is still running: {exc}"
+                        )
+                        return
+
+                    analysis_details = self._analysis_details()
+                    with session_lock:
+                        pending_window_count = max(pending_window_count - 1, 0)
+                        completed_window_count += 1
+                        successful_window_count += 1
+                        session_detections.extend(detections)
+                        session_detections.sort(key=lambda item: item.started_at)
+
+                    self._birdnet_logger.info(
+                        "Live BirdNET window completed index=%s started_at=%s ended_at=%s detections=%s species=%s",
+                        summary["window_index"],
+                        summary["window_started_at"],
+                        summary["window_ended_at"],
+                        len(summary["detections"]),
+                        ", ".join(summary["species"]) if summary["species"] else "none",
+                    )
+                    self._set_status(
+                        species_error=None,
+                        last_species_analysis_error=None,
+                        birdnet_last_analysis_target=analysis_details.get("file_path"),
+                        birdnet_last_analysis_started_at=analysis_details.get("started_at"),
+                        birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
+                        birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
+                        birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
+                        birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
+                        birdnet_live_last_window_started_at=summary["window_started_at"],
+                        birdnet_live_last_window_ended_at=summary["window_ended_at"],
+                    )
+                    refresh_live_status(
+                        "Recording audio now. BirdNET is analyzing each finished 9-second window in parallel."
+                    )
+
+                def submit_live_window(window_samples: np.ndarray, window_started_at: datetime) -> None:
+                    nonlocal pending_window_count, submitted_window_count
+                    mono_window = self._mix_to_mono(window_samples)
+                    if mono_window.size < minimum_live_frames:
+                        self._birdnet_logger.info(
+                            "Skipping live BirdNET window shorter than %ss started_at=%s sample_count=%s",
+                            MINIMUM_LIVE_ANALYSIS_SECONDS,
+                            window_started_at.isoformat(),
+                            int(mono_window.size),
+                        )
+                        return
+
+                    submitted_window_count += 1
+                    with session_lock:
+                        pending_window_count += 1
+
+                    future = self._analysis_executor.submit(
+                        self._classify_live_window,
+                        samples=mono_window,
+                        sample_rate=settings.sample_rate,
+                        window_started_at=window_started_at,
+                        latitude=settings.latitude,
+                        longitude=settings.longitude,
+                        min_confidence=settings.species_min_confidence,
+                        capture_mode=capture_mode,
+                        window_index=submitted_window_count,
+                    )
+                    with session_lock:
+                        analysis_futures.add(future)
+                    future.add_done_callback(handle_live_window_completion)
+                    refresh_live_status(
+                        "Recording audio now. BirdNET is analyzing each finished 9-second window in parallel."
+                    )
+
+                def on_chunk(chunk: np.ndarray) -> None:
+                    nonlocal submitted_frames_total
+                    self._append_waveform(chunk)
+                    if not species_enabled:
+                        return
+
+                    for live_window in live_window_accumulator.push(chunk):
+                        window_started_at = started_at + timedelta(
+                            seconds=float(submitted_frames_total / max(settings.sample_rate, 1))
+                        )
+                        submitted_frames_total += int(live_window.shape[0])
+                        submit_live_window(live_window, window_started_at)
+
                 self._birdnet_logger.info(
-                    "Preparing recording segment mode=%s segment_seconds=%s sample_rate=%s channels=%s preferred_device_index=%s preferred_device_name=%s active_schedules=%s species_enabled=%s",
+                    "Preparing continuous recording mode=%s sample_rate=%s channels=%s preferred_device_index=%s preferred_device_name=%s active_schedules=%s species_enabled=%s live_window_seconds=%s",
                     capture_mode,
-                    segment_seconds,
                     settings.sample_rate,
                     settings.channels,
                     settings.device_index if settings.device_index is not None else "auto",
                     settings.device_name or "auto",
                     active_schedule_names or ["none"],
                     species_enabled,
+                    LIVE_BIRDNET_WINDOW_SECONDS,
                 )
                 self._set_status(
                     is_recording=True,
@@ -355,41 +653,54 @@ class RecordingManager:
                     activity_reason=capture_mode,
                     activity_message=activity_message,
                     processing_stage="recording",
-                    processing_message="Recording audio now. BirdNET matching will start after this segment stops.",
+                    processing_message="Recording audio now. BirdNET will analyze each finished 9-second window while the recording keeps going.",
                     segment_started_at=utc_iso(started_at),
                     last_error=None,
+                    live_detection_count=0,
+                    live_detected_species=[],
+                    live_detections=[],
+                    birdnet_live_analysis_active=False,
+                    birdnet_live_pending_windows=0,
+                    birdnet_live_completed_windows=0,
+                    birdnet_live_last_window_started_at=None,
+                    birdnet_live_last_window_ended_at=None,
                     last_checked_at=utc_iso(started_at),
                 )
 
                 created_clip_paths: list[Path] = []
                 try:
-                    capture = record_segment(
-                        duration_seconds=segment_seconds,
+                    session_capture = record_continuous_session(
+                        target_path=file_path,
                         sample_rate=settings.sample_rate,
                         channels=settings.channels,
                         preferred_name=settings.device_name,
                         preferred_index=settings.device_index,
-                        on_chunk=self._append_waveform,
-                        should_stop=lambda: self._recording_should_stop(capture_mode),
+                        on_chunk=on_chunk,
+                        should_stop=session_should_stop,
                     )
                     ended_at = datetime.utcnow()
                     self._birdnet_logger.info(
-                        "Recording segment finished sample_count=%s duration=%.2fs sample_rate=%s channels=%s device=%s peak_amplitude=%.6f manual_stop_requested=%s",
-                        int(np.asarray(capture.samples).shape[0]),
-                        max((ended_at - started_at).total_seconds(), 0.0),
-                        capture.sample_rate,
-                        capture.channels,
-                        capture.device_name or "unknown",
-                        peak_amplitude(capture.samples),
+                        "Recording session finished frame_count=%s duration=%.2fs sample_rate=%s channels=%s device=%s peak_amplitude=%.6f manual_stop_requested=%s file=%s",
+                        session_capture.frame_count,
+                        session_capture.duration_seconds,
+                        session_capture.sample_rate,
+                        session_capture.channels,
+                        session_capture.device_name or "unknown",
+                        session_capture.peak_amplitude,
                         self._manual_stop_is_requested(),
+                        file_path,
                     )
 
-                    if capture.samples.size == 0:
+                    if session_capture.frame_count <= 0:
+                        try:
+                            file_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                         self._birdnet_logger.warning(
-                            "Recording segment produced no audio samples mode=%s duration=%.2fs device=%s",
+                            "Recording session produced no audio samples mode=%s duration=%.2fs device=%s",
                             capture_mode,
-                            max((ended_at - started_at).total_seconds(), 0.0),
-                            capture.device_name or "unknown",
+                            session_capture.duration_seconds,
+                            session_capture.device_name or "unknown",
                         )
                         self._clear_manual_stop()
                         next_manual_mode = self._manual_requested()
@@ -399,10 +710,10 @@ class RecordingManager:
                             manual_mode=next_manual_mode,
                             activity_reason=next_reason,
                             activity_message=(
-                                "Manual recording is armed and waiting for the next segment."
+                                "Manual recording is armed and waiting to start."
                                 if next_manual_mode
                                 else (
-                                    "Scheduled window remains active. The next segment will start shortly."
+                                    "Scheduled window remains active. Recording will restart shortly."
                                     if active_schedule_names
                                     else "Recording stopped before any audio was captured."
                                 )
@@ -410,108 +721,101 @@ class RecordingManager:
                             processing_stage="idle",
                             processing_message="No audio was captured, so BirdNET had nothing to analyze.",
                             segment_started_at=None,
+                            live_detection_count=0,
+                            live_detected_species=[],
+                            live_detections=[],
+                            birdnet_live_analysis_active=False,
+                            birdnet_live_pending_windows=0,
                             last_checked_at=utc_iso(ended_at),
                         )
                         if self._stop_event.wait(1):
                             break
                         continue
 
-                    file_path = self._build_recording_path(started_at)
-                    save_capture(capture, file_path)
                     self._birdnet_logger.info(
-                        "Saved recording segment file=%s mode=%s duration=%.2fs sample_rate=%s channels=%s device=%s size_bytes=%s",
+                        "Saved continuous recording file=%s mode=%s duration=%.2fs sample_rate=%s channels=%s device=%s size_bytes=%s",
                         file_path,
                         capture_mode,
-                        max((ended_at - started_at).total_seconds(), 0.0),
-                        capture.sample_rate,
-                        capture.channels,
-                        capture.device_name or "unknown",
+                        session_capture.duration_seconds,
+                        session_capture.sample_rate,
+                        session_capture.channels,
+                        session_capture.device_name or "unknown",
                         file_path.stat().st_size if file_path.exists() else "unknown",
                     )
 
-                    species_predictions = []
                     last_processing_summary = "Species analysis is disabled for this recorder."
                     detected_species: list[str] = []
-                    analysis_succeeded = False
-                    if species_provider == "birdnet" and not species_enabled:
-                        last_processing_summary = species_error or "BirdNET is unavailable, so no species analysis was run."
-                        self._birdnet_logger.warning(
-                            "Skipping BirdNET analysis for %s because the runtime is unavailable: %s",
-                            file_path.name,
-                            last_processing_summary,
-                        )
                     if species_enabled:
-                        analysis_started_at = datetime.utcnow()
+                        remainder_window = live_window_accumulator.flush_remainder(minimum_live_frames)
+                        if remainder_window is not None:
+                            window_started_at = started_at + timedelta(
+                                seconds=float(submitted_frames_total / max(settings.sample_rate, 1))
+                            )
+                            submitted_frames_total += int(remainder_window.shape[0])
+                            self._birdnet_logger.info(
+                                "Submitting final partial live BirdNET window after recording stop started_at=%s sample_count=%s",
+                                window_started_at.isoformat(),
+                                int(remainder_window.shape[0]),
+                            )
+                            submit_live_window(remainder_window, window_started_at)
+
+                    with session_lock:
+                        pending_futures = list(analysis_futures)
+                    if pending_futures:
                         self._set_status(
                             is_recording=False,
                             activity_reason="analyzing",
-                            activity_message="BirdNET is analyzing the finished segment.",
+                            activity_message="Recording stopped. BirdNET is finishing the last live windows.",
                             processing_stage="analyzing",
-                            processing_message="BirdNET matching is running now. It happens after recording stops, not in real time.",
+                            processing_message=(
+                                f"Recording stopped. Waiting for {len(pending_futures)} live BirdNET window(s) to finish before saving the result."
+                            ),
                             segment_started_at=None,
-                            birdnet_last_analysis_target=str(file_path),
-                            birdnet_last_analysis_started_at=utc_iso(analysis_started_at),
-                            birdnet_last_analysis_finished_at=None,
-                            birdnet_last_analysis_duration_seconds=None,
                         )
-                        self._birdnet_logger.info(
-                            "Starting BirdNET post-recording analysis for %s location=%s latitude=%s longitude=%s min_confidence=%.2f",
+                        for future in pending_futures:
+                            try:
+                                future.result()
+                            except Exception:
+                                pass
+
+                    live_detections = sorted(session_detections, key=lambda item: item.started_at)
+                    if species_provider == "birdnet" and not species_enabled:
+                        last_processing_summary = species_error or "BirdNET is unavailable, so no species analysis was run."
+                        self._birdnet_logger.warning(
+                            "Skipping BirdNET live analysis for %s because the runtime is unavailable: %s",
                             file_path.name,
-                            settings.location_name or "none",
-                            settings.latitude if settings.latitude is not None else "none",
-                            settings.longitude if settings.longitude is not None else "none",
-                            settings.species_min_confidence,
+                            last_processing_summary,
                         )
-                        try:
-                            species_predictions = self._species_classifier.classify(
-                                file_path,
-                                latitude=settings.latitude,
-                                longitude=settings.longitude,
-                                recorded_at=started_at,
-                                min_confidence=settings.species_min_confidence,
-                            )
-                            analysis_details = self._analysis_details()
-                            analysis_succeeded = True
-                            self._set_status(species_error=None, last_species_analysis_error=None)
-                            last_processing_summary, detected_species = self._build_recording_summary(species_predictions)
-                            self._set_status(
-                                birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
-                                birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
-                                birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
-                                birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", len(species_predictions)),
-                            )
-                        except Exception as exc:
-                            self.app.logger.warning("Species detection failed for %s: %s", file_path, exc)
-                            failure_message = f"BirdNET analysis failed: {exc}"
-                            analysis_details = self._analysis_details()
-                            last_processing_summary = failure_message
-                            self._set_status(
-                                species_error=failure_message,
-                                last_species_analysis_error=failure_message,
-                                birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
-                                birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
-                                birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
-                                birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
-                            )
+                    elif species_enabled and submitted_window_count == 0:
+                        last_processing_summary = (
+                            f"BirdNET was enabled, but the recording ended before a {MINIMUM_LIVE_ANALYSIS_SECONDS}-second analysis window was available."
+                        )
+                    elif species_enabled and successful_window_count == 0 and live_failures:
+                        last_processing_summary = f"BirdNET live analysis failed: {live_failures[-1]}"
+                    elif species_enabled:
+                        self._set_status(species_error=None, last_species_analysis_error=None)
+                        last_processing_summary, detected_species = self._build_recording_summary(live_detections)
+
+                    if live_failures and successful_window_count > 0:
+                        last_processing_summary = f"{last_processing_summary} Some live windows failed: {live_failures[-1]}"
 
                     timeline_detections: list[BirdDetection] = []
-                    if species_predictions:
+                    if live_detections:
                         self._set_status(
                             processing_stage="extracting-clips",
-                            processing_message=f"BirdNET found {len(species_predictions)} occurrence(s). Saving separate clip files now.",
+                            processing_message=f"BirdNET found {len(live_detections)} occurrence(s). Saving separate clip files now.",
                         )
                         self._birdnet_logger.info(
-                            "BirdNET found %s merged detection(s) in %s. Extracting occurrence clips now.",
-                            len(species_predictions),
+                            "BirdNET found %s merged live detection(s) in %s. Extracting occurrence clips now.",
+                            len(live_detections),
                             file_path.name,
                         )
                         timeline_detections, created_clip_paths = self._create_species_detections(
-                            capture_samples=capture.samples,
-                            sample_rate=capture.sample_rate,
+                            recording_file_path=file_path,
                             recording_started_at=started_at,
-                            predictions=species_predictions,
+                            detections=live_detections,
                         )
-                    elif species_enabled and analysis_succeeded:
+                    elif species_enabled and successful_window_count > 0:
                         self._birdnet_logger.info("BirdNET found no detections in %s, so no clips were created.", file_path.name)
 
                     self._set_status(
@@ -521,22 +825,22 @@ class RecordingManager:
                     self._birdnet_logger.info(
                         "Persisting timeline entry file=%s duration=%.2fs detections=%s clips=%s has_bird_activity=%s",
                         file_path,
-                        max((ended_at - started_at).total_seconds(), 0.0),
+                        session_capture.duration_seconds,
                         len(timeline_detections),
                         len(created_clip_paths),
-                        bool(species_predictions),
+                        bool(live_detections),
                     )
                     recording = Recording(
                         file_path=str(file_path),
                         started_at=started_at,
                         ended_at=ended_at,
-                        duration_seconds=max((ended_at - started_at).total_seconds(), 0.0),
-                        sample_rate=capture.sample_rate,
-                        channels=capture.channels,
+                        duration_seconds=session_capture.duration_seconds,
+                        sample_rate=session_capture.sample_rate,
+                        channels=session_capture.channels,
                         size_bytes=file_path.stat().st_size,
-                        peak_amplitude=peak_amplitude(capture.samples),
-                        device_name=capture.device_name,
-                        has_bird_activity=bool(species_predictions),
+                        peak_amplitude=session_capture.peak_amplitude,
+                        device_name=session_capture.device_name,
+                        has_bird_activity=bool(live_detections),
                         bird_event_count=len(timeline_detections),
                     )
                     db.session.add(recording)
@@ -560,24 +864,30 @@ class RecordingManager:
                     self._set_status(
                         is_recording=False,
                         manual_mode=manual_still_requested,
-                        current_device_name=capture.device_name,
+                        current_device_name=session_capture.device_name,
                         last_recording_at=utc_iso(ended_at),
                         activity_reason=next_reason,
                         activity_message=(
-                            "Manual recording will continue with the next segment."
+                            "Manual recording will continue until you press Stop."
                             if manual_still_requested
                             else (
-                                "Scheduled window is still active. The next segment starts soon."
+                                "Scheduled window is still active. Recording continues in the next session shortly."
                                 if active_schedule_names
                                 else "Waiting for the next schedule or manual start."
                             )
                         ),
                         processing_stage="idle",
-                        processing_message="Recorder is waiting. BirdNET will run again after the next finished segment.",
+                        processing_message="Recorder is waiting. BirdNET will analyze the next live 9-second windows when recording starts again.",
                         last_processing_summary=last_processing_summary,
                         last_detection_count=len(timeline_detections),
                         last_clip_count=len(created_clip_paths),
                         last_detected_species=detected_species,
+                        live_detection_count=0,
+                        live_detected_species=[],
+                        live_detections=[],
+                        birdnet_live_analysis_active=False,
+                        birdnet_live_pending_windows=0,
+                        birdnet_live_completed_windows=completed_window_count,
                         birdnet_last_merged_detection_count=len(timeline_detections),
                         segment_started_at=None,
                         last_error=None,
@@ -600,6 +910,8 @@ class RecordingManager:
                         processing_stage="error",
                         processing_message="The background workflow stopped because of an error.",
                         segment_started_at=None,
+                        birdnet_live_analysis_active=False,
+                        birdnet_live_pending_windows=0,
                         last_error=str(exc),
                     )
                     if self._stop_event.wait(2):

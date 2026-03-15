@@ -37,6 +37,17 @@ class AudioCapture:
     device_name: str
 
 
+@dataclass(frozen=True)
+class AudioSessionCapture:
+    sample_rate: int
+    channels: int
+    device_index: int
+    device_name: str
+    frame_count: int
+    duration_seconds: float
+    peak_amplitude: float
+
+
 def list_input_devices() -> list[dict[str, object]]:
     ensure_audio_runtime()
     devices = sd.query_devices()
@@ -194,6 +205,99 @@ def record_segment(
     )
 
 
+def record_continuous_session(
+    target_path: Path,
+    sample_rate: int,
+    channels: int,
+    preferred_name: str | None = None,
+    preferred_index: int | None = None,
+    on_chunk: ChunkCallback | None = None,
+    should_stop: StopCallback | None = None,
+    max_duration_seconds: float | None = None,
+    chunk_seconds: float = 0.12,
+) -> AudioSessionCapture:
+    ensure_audio_runtime()
+    device_index, device_name = resolve_input_device(preferred_name, preferred_index)
+    block_size = max(256, int(sample_rate * chunk_seconds))
+    max_frames = (
+        max(1, int(max_duration_seconds * sample_rate))
+        if max_duration_seconds is not None
+        else None
+    )
+    captured_frames = 0
+    peak = 0.0
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_name(f".{target_path.name}.tmp")
+
+    try:
+        with sf.SoundFile(
+            temp_path,
+            mode="w",
+            samplerate=sample_rate,
+            channels=channels,
+            format="WAV",
+            subtype="PCM_16",
+        ) as audio_file:
+            with sd.InputStream(
+                samplerate=sample_rate,
+                channels=channels,
+                dtype="float32",
+                device=device_index,
+                blocksize=block_size,
+                latency="low",
+            ) as stream:
+                while True:
+                    if should_stop is not None and should_stop():
+                        break
+
+                    frames_to_read = block_size
+                    if max_frames is not None:
+                        remaining_frames = max_frames - captured_frames
+                        if remaining_frames <= 0:
+                            break
+                        frames_to_read = min(frames_to_read, remaining_frames)
+
+                    chunk, overflowed = stream.read(frames_to_read)
+                    if overflowed:
+                        pass
+
+                    chunk_array = np.asarray(chunk, dtype=np.float32)
+                    if chunk_array.size == 0:
+                        continue
+
+                    prepared_chunk = _prepare_audio_for_wav(chunk_array)
+                    audio_file.write(prepared_chunk)
+                    captured_frames += int(chunk_array.shape[0])
+                    peak = max(peak, peak_amplitude(chunk_array))
+
+                    if on_chunk is not None:
+                        on_chunk(chunk_array.copy())
+
+                    if should_stop is not None and should_stop():
+                        break
+
+        info = sf.info(temp_path)
+        sf.read(temp_path, frames=min(64, max(1, int(info.frames))), dtype="float32")
+        temp_path.replace(target_path)
+    except Exception:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+    return AudioSessionCapture(
+        sample_rate=sample_rate,
+        channels=channels,
+        device_index=device_index,
+        device_name=device_name,
+        frame_count=captured_frames,
+        duration_seconds=float(captured_frames / max(sample_rate, 1)),
+        peak_amplitude=peak,
+    )
+
+
 def save_capture(capture: AudioCapture, target_path: Path) -> None:
     ensure_audio_runtime()
     _write_standard_wav(target_path, capture.samples, capture.sample_rate)
@@ -220,6 +324,36 @@ def extract_clip_samples(
     if end_frame <= start_frame:
         return np.zeros_like(samples[:0])
     return np.asarray(samples[start_frame:end_frame]).copy()
+
+
+def extract_clip_to_file(
+    source_path: Path,
+    target_path: Path,
+    start_offset_seconds: float,
+    end_offset_seconds: float,
+    padding_seconds: float = 0.25,
+) -> float | None:
+    ensure_audio_runtime()
+    with sf.SoundFile(source_path, mode="r") as source:
+        sample_rate = int(source.samplerate)
+        total_frames = int(source.frames)
+        start_frame = max(0, int(np.floor((start_offset_seconds - padding_seconds) * sample_rate)))
+        end_frame = min(total_frames, int(np.ceil((end_offset_seconds + padding_seconds) * sample_rate)))
+        if end_frame <= start_frame:
+            return None
+
+        source.seek(start_frame)
+        clip_samples = source.read(
+            frames=end_frame - start_frame,
+            dtype="float32",
+            always_2d=source.channels > 1,
+        )
+
+    if np.asarray(clip_samples).size == 0:
+        return None
+
+    save_audio_samples(np.asarray(clip_samples, dtype=np.float32), sample_rate, target_path)
+    return float((end_frame - start_frame) / max(sample_rate, 1))
 
 
 def peak_amplitude(samples: np.ndarray) -> float:

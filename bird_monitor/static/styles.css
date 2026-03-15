@@ -181,6 +181,20 @@ h1 {
   margin-bottom: 16px;
 }
 
+.panel-head-compact {
+  margin-bottom: 12px;
+}
+
+.panel-head-compact h2 {
+  font-size: 1rem;
+}
+
+.panel-head-compact p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .panel-actions {
   display: flex;
   gap: 10px;
@@ -265,6 +279,52 @@ h1 {
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.62);
   border: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.live-detection-panel {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.live-detections-list {
+  display: grid;
+  gap: 10px;
+}
+
+.live-detection-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(240, 122, 40, 0.14);
+}
+
+.live-detection-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.live-detection-main span,
+.live-detection-meta span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.live-detection-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-detections-empty {
+  padding: 16px;
 }
 
 .pipeline-panel {
@@ -1019,6 +1079,8 @@ button:hover {
   .manual-actions,
   .pipeline-head,
   .timeline-toolbar,
+  .live-detection-item,
+  .live-detection-meta,
   .recording-item-main,
   .recording-item-meta,
   .recording-item-details,

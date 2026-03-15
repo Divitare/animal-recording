@@ -58,6 +58,19 @@ class NullSpeciesClassifier:
     ) -> list[SpeciesPrediction]:
         return []
 
+    def classify_samples(
+        self,
+        samples: np.ndarray,
+        *,
+        sample_rate: int,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        recorded_at: datetime | None = None,
+        min_confidence: float | None = None,
+        source_label: str | None = None,
+    ) -> list[SpeciesPrediction]:
+        return []
+
 
 class BirdNetSpeciesClassifier:
     provider_name = "birdnet"
@@ -117,6 +130,122 @@ class BirdNetSpeciesClassifier:
 
     def available(self) -> bool:
         return True
+
+    def _analysis_kwargs(
+        self,
+        *,
+        latitude: float | None,
+        longitude: float | None,
+        recorded_at: datetime | None,
+        min_confidence: float | None,
+    ) -> tuple[datetime, float, dict[str, object]]:
+        analysis_started_at = datetime.utcnow()
+        effective_confidence = float(min_confidence if min_confidence is not None else self._min_confidence)
+        kwargs: dict[str, object] = {
+            "min_conf": effective_confidence,
+            "return_all_detections": True,
+        }
+        if latitude is not None and longitude is not None:
+            kwargs["lat"] = latitude
+            kwargs["lon"] = longitude
+        if recorded_at is not None:
+            kwargs["date"] = recorded_at
+        return analysis_started_at, effective_confidence, kwargs
+
+    def _finalize_predictions(
+        self,
+        *,
+        raw_detections: list[dict[str, object]],
+        analysis_started_at: datetime,
+        source_label: str,
+    ) -> list[SpeciesPrediction]:
+        self._logger.info("BirdNET raw detections received count=%s", len(raw_detections))
+        for index, item in enumerate(raw_detections, start=1):
+            self._logger.info("BirdNET raw detection %s payload=%s", index, _compact_detection_payload(item))
+
+        predictions: list[SpeciesPrediction] = []
+        for item in raw_detections:
+            common_name = item.get("common_name") or item.get("label")
+            if not common_name:
+                continue
+            predictions.append(
+                SpeciesPrediction(
+                    start_offset_seconds=float(item.get("start_time", 0.0)),
+                    end_offset_seconds=float(item.get("end_time", item.get("start_time", 0.0))),
+                    common_name=str(common_name),
+                    scientific_name=_clean_optional_text(item.get("scientific_name")),
+                    confidence=float(item.get("confidence", 0.0)),
+                )
+            )
+        merged_predictions = merge_species_predictions(predictions)
+        unique_species = []
+        for prediction in merged_predictions:
+            if prediction.common_name not in unique_species:
+                unique_species.append(prediction.common_name)
+
+        finished_at = datetime.utcnow()
+        duration_seconds = max((finished_at - analysis_started_at).total_seconds(), 0.0)
+        self.last_analysis_details = {
+            "started_at": analysis_started_at.isoformat() + "Z",
+            "finished_at": finished_at.isoformat() + "Z",
+            "duration_seconds": duration_seconds,
+            "file_path": source_label,
+            "raw_detection_count": len(raw_detections),
+            "merged_detection_count": len(merged_predictions),
+            "species": unique_species,
+            "error": None,
+        }
+
+        self._logger.info(
+            "BirdNET analysis finished for %s in %.2fs raw_detections=%s merged_detections=%s species=%s",
+            source_label,
+            duration_seconds,
+            len(raw_detections),
+            len(merged_predictions),
+            ", ".join(unique_species) if unique_species else "none",
+        )
+        if merged_predictions:
+            for prediction in merged_predictions:
+                self._logger.info(
+                    "BirdNET detection species=%s scientific=%s confidence=%.3f start=%.2fs end=%.2fs",
+                    prediction.common_name,
+                    prediction.scientific_name or "-",
+                    prediction.confidence,
+                    prediction.start_offset_seconds,
+                    prediction.end_offset_seconds,
+                )
+        else:
+            self._logger.info("BirdNET found no bird species in %s.", source_label)
+
+        return merged_predictions
+
+    def _finalize_failure(
+        self,
+        *,
+        analysis_started_at: datetime,
+        source_label: str,
+        kwargs: dict[str, object],
+        exc: Exception,
+    ) -> None:
+        finished_at = datetime.utcnow()
+        duration_seconds = max((finished_at - analysis_started_at).total_seconds(), 0.0)
+        self.last_analysis_details = {
+            "started_at": analysis_started_at.isoformat() + "Z",
+            "finished_at": finished_at.isoformat() + "Z",
+            "duration_seconds": duration_seconds,
+            "file_path": source_label,
+            "raw_detection_count": 0,
+            "merged_detection_count": 0,
+            "species": [],
+            "error": str(exc),
+        }
+        self._logger.exception(
+            "BirdNET analysis failed for %s after %.2fs kwargs=%s runtime=%s",
+            source_label,
+            duration_seconds,
+            _serialize_birdnet_kwargs(kwargs),
+            self.runtime_details,
+        )
 
     def _analyze_detections(self, file_path: Path, kwargs: dict[str, object]) -> list[dict[str, object]]:
         self._logger.info(
@@ -195,8 +324,12 @@ class BirdNetSpeciesClassifier:
         recorded_at: datetime | None = None,
         min_confidence: float | None = None,
     ) -> list[SpeciesPrediction]:
-        analysis_started_at = datetime.utcnow()
-        effective_confidence = float(min_confidence if min_confidence is not None else self._min_confidence)
+        analysis_started_at, effective_confidence, kwargs = self._analysis_kwargs(
+            latitude=latitude,
+            longitude=longitude,
+            recorded_at=recorded_at,
+            min_confidence=min_confidence,
+        )
         file_size = file_path.stat().st_size if file_path.exists() else None
         self.last_analysis_details = {
             "started_at": analysis_started_at.isoformat() + "Z",
@@ -208,15 +341,6 @@ class BirdNetSpeciesClassifier:
             "species": [],
             "error": None,
         }
-        kwargs: dict[str, object] = {
-            "min_conf": effective_confidence,
-            "return_all_detections": True,
-        }
-        if latitude is not None and longitude is not None:
-            kwargs["lat"] = latitude
-            kwargs["lon"] = longitude
-        if recorded_at is not None:
-            kwargs["date"] = recorded_at
 
         self._logger.info(
             "BirdNET classify request source=%s exists=%s kwargs=%s",
@@ -304,85 +428,85 @@ class BirdNetSpeciesClassifier:
                         self._logger.info("Removed temporary BirdNET fallback WAV %s", fallback_path)
                     except OSError:
                         pass
-
-            self._logger.info("BirdNET raw detections received count=%s", len(raw_detections))
-            for index, item in enumerate(raw_detections, start=1):
-                self._logger.info("BirdNET raw detection %s payload=%s", index, _compact_detection_payload(item))
-
-            predictions: list[SpeciesPrediction] = []
-            for item in raw_detections:
-                common_name = item.get("common_name") or item.get("label")
-                if not common_name:
-                    continue
-                predictions.append(
-                    SpeciesPrediction(
-                        start_offset_seconds=float(item.get("start_time", 0.0)),
-                        end_offset_seconds=float(item.get("end_time", item.get("start_time", 0.0))),
-                        common_name=str(common_name),
-                        scientific_name=_clean_optional_text(item.get("scientific_name")),
-                        confidence=float(item.get("confidence", 0.0)),
-                    )
-                )
-            merged_predictions = merge_species_predictions(predictions)
-            unique_species = []
-            for prediction in merged_predictions:
-                if prediction.common_name not in unique_species:
-                    unique_species.append(prediction.common_name)
-
-            finished_at = datetime.utcnow()
-            duration_seconds = max((finished_at - analysis_started_at).total_seconds(), 0.0)
-            self.last_analysis_details = {
-                "started_at": analysis_started_at.isoformat() + "Z",
-                "finished_at": finished_at.isoformat() + "Z",
-                "duration_seconds": duration_seconds,
-                "file_path": str(file_path),
-                "raw_detection_count": len(raw_detections),
-                "merged_detection_count": len(merged_predictions),
-                "species": unique_species,
-                "error": None,
-            }
-
-            self._logger.info(
-                "BirdNET analysis finished for %s in %.2fs raw_detections=%s merged_detections=%s species=%s",
-                file_path.name,
-                duration_seconds,
-                len(raw_detections),
-                len(merged_predictions),
-                ", ".join(unique_species) if unique_species else "none",
+            return self._finalize_predictions(
+                raw_detections=raw_detections,
+                analysis_started_at=analysis_started_at,
+                source_label=str(file_path),
             )
-            if merged_predictions:
-                for prediction in merged_predictions:
-                    self._logger.info(
-                        "BirdNET detection species=%s scientific=%s confidence=%.3f start=%.2fs end=%.2fs",
-                        prediction.common_name,
-                        prediction.scientific_name or "-",
-                        prediction.confidence,
-                        prediction.start_offset_seconds,
-                        prediction.end_offset_seconds,
-                    )
-            else:
-                self._logger.info("BirdNET found no bird species in %s.", file_path.name)
-
-            return merged_predictions
         except Exception as exc:
-            finished_at = datetime.utcnow()
-            duration_seconds = max((finished_at - analysis_started_at).total_seconds(), 0.0)
-            self.last_analysis_details = {
-                "started_at": analysis_started_at.isoformat() + "Z",
-                "finished_at": finished_at.isoformat() + "Z",
-                "duration_seconds": duration_seconds,
-                "file_path": str(file_path),
-                "raw_detection_count": 0,
-                "merged_detection_count": 0,
-                "species": [],
-                "error": str(exc),
-            }
-            self._logger.exception(
-                "BirdNET analysis failed for %s after %.2fs kwargs=%s runtime=%s",
-                file_path,
-                duration_seconds,
-                _serialize_birdnet_kwargs(kwargs),
-                self.runtime_details,
+            self._finalize_failure(
+                analysis_started_at=analysis_started_at,
+                source_label=str(file_path),
+                kwargs=kwargs,
+                exc=exc,
+            )
+            raise
+
+    def classify_samples(
+        self,
+        samples: np.ndarray,
+        *,
+        sample_rate: int,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        recorded_at: datetime | None = None,
+        min_confidence: float | None = None,
+        source_label: str | None = None,
+    ) -> list[SpeciesPrediction]:
+        analysis_started_at, effective_confidence, kwargs = self._analysis_kwargs(
+            latitude=latitude,
+            longitude=longitude,
+            recorded_at=recorded_at,
+            min_confidence=min_confidence,
+        )
+        label = source_label or "in-memory-buffer"
+        prepared_samples = np.ascontiguousarray(np.asarray(samples, dtype=np.float32).reshape(-1))
+        self.last_analysis_details = {
+            "started_at": analysis_started_at.isoformat() + "Z",
+            "finished_at": None,
+            "duration_seconds": None,
+            "file_path": label,
+            "raw_detection_count": 0,
+            "merged_detection_count": 0,
+            "species": [],
+            "error": None,
+        }
+
+        self._logger.info(
+            "BirdNET classify request source=%s sample_rate=%s kwargs=%s sample_summary=%s",
+            label,
+            sample_rate,
+            _serialize_birdnet_kwargs(kwargs),
+            _summarize_audio_samples(prepared_samples, sample_rate),
+        )
+        self._logger.info(
+            "BirdNET analysis started for %s size_bytes=%s min_confidence=%.2f latitude=%s longitude=%s recorded_at=%s",
+            label,
+            "buffer",
+            effective_confidence,
+            latitude if latitude is not None else "none",
+            longitude if longitude is not None else "none",
+            recorded_at.isoformat() if recorded_at is not None else "none",
+        )
+
+        try:
+            raw_detections = self._analyze_buffer_detections(
+                prepared_samples,
+                sample_rate,
+                kwargs,
+            )
+            self._logger.info("BirdNET path strategy succeeded strategy=in-memory-buffer source=%s", label)
+            return self._finalize_predictions(
+                raw_detections=raw_detections,
+                analysis_started_at=analysis_started_at,
+                source_label=label,
+            )
+        except Exception as exc:
+            self._finalize_failure(
+                analysis_started_at=analysis_started_at,
+                source_label=label,
+                kwargs=kwargs,
+                exc=exc,
             )
             raise
 

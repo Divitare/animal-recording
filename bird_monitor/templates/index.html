@@ -18,7 +18,7 @@
           <p class="eyebrow">Bird Monitor</p>
           <h1>USB microphone recorder with BirdNET species timeline and clip extraction</h1>
           <p class="lede">
-            Schedule recordings, start them manually when you want, watch the live waveform, and review BirdNET-confirmed bird detections and saved occurrence clips for any time span.
+            Schedule recordings, start them manually when you want, watch the live waveform, and review BirdNET-confirmed bird detections that update every 9 seconds while recording continues.
           </p>
         </div>
         <div class="status-card activity-card" id="status-card">
@@ -47,10 +47,20 @@
             </div>
           </div>
 
+          <section class="live-detection-panel" aria-label="Live bird activity">
+            <div class="panel-head panel-head-compact">
+              <h2>Live Bird Activity</h2>
+              <p id="live-detections-summary">BirdNET checks each finished 9-second window while the recording continues.</p>
+            </div>
+            <div class="live-detections-list" id="live-detections-list">
+              <div class="empty-state live-detections-empty">No live BirdNET detections yet.</div>
+            </div>
+          </section>
+
           <section class="pipeline-panel" aria-label="Background processing">
             <div class="pipeline-head">
               <h2>Background Pipeline</h2>
-              <p id="pipeline-mode-note">BirdNET checks each segment after recording stops.</p>
+              <p id="pipeline-mode-note">BirdNET checks each finished 9-second window while recording continues.</p>
             </div>
             <div class="pipeline-grid">
               <article class="pipeline-card" id="pipeline-recording-card">
@@ -61,7 +71,7 @@
               <article class="pipeline-card" id="pipeline-birdnet-card">
                 <span class="pipeline-label">BirdNET</span>
                 <strong id="pipeline-birdnet-state">Waiting</strong>
-                <p id="pipeline-birdnet-detail">Analysis starts after a segment has been saved.</p>
+                <p id="pipeline-birdnet-detail">Analysis starts on each finished 9-second window while recording continues.</p>
               </article>
               <article class="pipeline-card" id="pipeline-clips-card">
                 <span class="pipeline-label">Clips</span>
@@ -71,7 +81,7 @@
               <article class="pipeline-card" id="pipeline-result-card">
                 <span class="pipeline-label">Last Result</span>
                 <strong id="pipeline-result-state">No analysis yet</strong>
-                <p id="pipeline-result-detail">BirdNET results from the last finished segment appear here.</p>
+                <p id="pipeline-result-detail">Live BirdNET detections and the last saved result appear here.</p>
               </article>
             </div>
           </section>
