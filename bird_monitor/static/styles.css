@@ -341,7 +341,7 @@ h1 {
 
 .birdnet-log-line {
   display: grid;
-  grid-template-columns: auto auto minmax(120px, 220px) minmax(0, 1fr);
+  grid-template-columns: auto auto minmax(120px, 220px) minmax(0, 1fr) auto;
   gap: 10px;
   align-items: start;
   padding: 7px 0;
@@ -374,6 +374,13 @@ h1 {
 .birdnet-log-message {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.log-copy-button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  align-self: start;
 }
 
 #waveform-canvas {

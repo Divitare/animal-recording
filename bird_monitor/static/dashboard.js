@@ -528,7 +528,19 @@ function dashboardRenderBirdnetLogs(payload) {
     message.className = "birdnet-log-message";
     message.textContent = item.message || "";
 
-    row.append(time, level, logger, message);
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "log-copy-button secondary-button";
+    copyButton.textContent = "Copy";
+    copyButton.addEventListener("click", async () => {
+      try {
+        await dashboardCopyLogEntry(item, copyButton);
+      } catch (error) {
+        dashboardShowError(error);
+      }
+    });
+
+    row.append(time, level, logger, message, copyButton);
     dashboardElements.birdnetLogConsole.append(row);
   });
 
@@ -928,6 +940,34 @@ function dashboardFormatLogTimestamp(value) {
     return "--:--:--";
   }
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+async function dashboardCopyLogEntry(item, button) {
+  const logger = item.thread ? `${item.logger || "birdnet"} @ ${item.thread}` : (item.logger || "birdnet");
+  const text = `${dashboardFormatLogTimestamp(item.timestamp)} ${item.level || "INFO"} ${logger} ${item.message || ""}`.trim();
+  await dashboardWriteClipboard(text);
+  const originalLabel = button.textContent;
+  button.textContent = "Copied";
+  window.setTimeout(() => {
+    button.textContent = originalLabel;
+  }, 1200);
+}
+
+async function dashboardWriteClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const helper = document.createElement("textarea");
+  helper.value = text;
+  helper.setAttribute("readonly", "readonly");
+  helper.style.position = "absolute";
+  helper.style.left = "-9999px";
+  document.body.append(helper);
+  helper.select();
+  document.execCommand("copy");
+  helper.remove();
 }
 
 function dashboardShortenPath(value) {

@@ -196,14 +196,12 @@ def record_segment(
 
 def save_capture(capture: AudioCapture, target_path: Path) -> None:
     ensure_audio_runtime()
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(target_path, capture.samples, capture.sample_rate, subtype="PCM_16")
+    _write_standard_wav(target_path, capture.samples, capture.sample_rate)
 
 
 def save_audio_samples(samples: np.ndarray, sample_rate: int, target_path: Path) -> None:
     ensure_audio_runtime()
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(target_path, samples, sample_rate, subtype="PCM_16")
+    _write_standard_wav(target_path, samples, sample_rate)
 
 
 def extract_clip_samples(
@@ -228,3 +226,49 @@ def peak_amplitude(samples: np.ndarray) -> float:
     if samples.size == 0:
         return 0.0
     return float(np.max(np.abs(samples)))
+
+
+def describe_audio_file(target_path: Path) -> dict[str, object]:
+    ensure_audio_runtime()
+    info = sf.info(target_path)
+    return {
+        "path": str(target_path),
+        "sample_rate": int(info.samplerate),
+        "channels": int(info.channels),
+        "frames": int(info.frames),
+        "duration_seconds": float(info.duration),
+        "format": str(info.format),
+        "subtype": str(info.subtype),
+        "size_bytes": int(target_path.stat().st_size),
+    }
+
+
+def rewrite_audio_file(source_path: Path, target_path: Path) -> dict[str, object]:
+    ensure_audio_runtime()
+    samples, sample_rate = sf.read(source_path, dtype="float32", always_2d=False)
+    _write_standard_wav(target_path, samples, int(sample_rate))
+    return describe_audio_file(target_path)
+
+
+def _write_standard_wav(target_path: Path, samples: np.ndarray, sample_rate: int) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    prepared_samples = _prepare_audio_for_wav(samples)
+    temp_path = target_path.with_name(f".{target_path.name}.tmp")
+    sf.write(temp_path, prepared_samples, sample_rate, format="WAV", subtype="PCM_16")
+    info = sf.info(temp_path)
+    sf.read(temp_path, frames=min(64, max(1, int(info.frames))), dtype="float32")
+    temp_path.replace(target_path)
+
+
+def _prepare_audio_for_wav(samples: np.ndarray) -> np.ndarray:
+    prepared = np.asarray(samples, dtype=np.float32)
+    if prepared.ndim == 0:
+        prepared = prepared.reshape(1)
+    if prepared.ndim == 2 and prepared.shape[1] == 1:
+        prepared = prepared[:, 0]
+    elif prepared.ndim > 2:
+        prepared = prepared.reshape(prepared.shape[0], -1)
+
+    prepared = np.nan_to_num(prepared, nan=0.0, posinf=1.0, neginf=-1.0)
+    prepared = np.clip(prepared, -1.0, 1.0)
+    return np.ascontiguousarray(prepared)

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .audio import describe_audio_file, rewrite_audio_file
 from .detection import BirdActivityEvent
 from .runtime_logging import get_birdnet_logger
 
@@ -97,6 +98,11 @@ class BirdNetSpeciesClassifier:
     def available(self) -> bool:
         return True
 
+    def _analyze_detections(self, file_path: Path, kwargs: dict[str, object]) -> list[dict[str, object]]:
+        recording = self._recording_cls(self._analyzer, str(file_path), **kwargs)
+        recording.analyze()
+        return list(getattr(recording, "detections", []))
+
     def classify(
         self,
         file_path: Path,
@@ -128,6 +134,18 @@ class BirdNetSpeciesClassifier:
         if recorded_at is not None:
             kwargs["date"] = recorded_at
 
+        audio_details = _safe_describe_audio_file(file_path)
+        if audio_details is not None:
+            self._logger.info(
+                "BirdNET input audio sample_rate=%s channels=%s frames=%s duration=%.2fs format=%s subtype=%s size_bytes=%s",
+                audio_details["sample_rate"],
+                audio_details["channels"],
+                audio_details["frames"],
+                audio_details["duration_seconds"],
+                audio_details["format"],
+                audio_details["subtype"],
+                audio_details["size_bytes"],
+            )
         self._logger.info(
             "BirdNET analysis started for %s size_bytes=%s min_confidence=%.2f latitude=%s longitude=%s recorded_at=%s",
             file_path,
@@ -139,9 +157,39 @@ class BirdNetSpeciesClassifier:
         )
 
         try:
-            recording = self._recording_cls(self._analyzer, str(file_path), **kwargs)
-            recording.analyze()
-            raw_detections = list(getattr(recording, "detections", []))
+            fallback_path: Path | None = None
+            try:
+                raw_detections = self._analyze_detections(file_path, kwargs)
+            except Exception as exc:
+                if not _is_audio_format_error(exc):
+                    raise
+
+                fallback_path = file_path.with_name(f"{file_path.stem}_birdnet_retry.wav")
+                self._logger.warning(
+                    "BirdNET could not read %s directly (%s). Rewriting a compatibility WAV and retrying once.",
+                    file_path,
+                    exc,
+                )
+                fallback_details = rewrite_audio_file(file_path, fallback_path)
+                self._logger.info(
+                    "BirdNET fallback WAV sample_rate=%s channels=%s frames=%s duration=%.2fs format=%s subtype=%s size_bytes=%s path=%s",
+                    fallback_details["sample_rate"],
+                    fallback_details["channels"],
+                    fallback_details["frames"],
+                    fallback_details["duration_seconds"],
+                    fallback_details["format"],
+                    fallback_details["subtype"],
+                    fallback_details["size_bytes"],
+                    fallback_details["path"],
+                )
+                raw_detections = self._analyze_detections(fallback_path, kwargs)
+            finally:
+                if fallback_path is not None:
+                    try:
+                        fallback_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
             predictions: list[SpeciesPrediction] = []
             for item in raw_detections:
                 common_name = item.get("common_name") or item.get("label")
@@ -322,4 +370,17 @@ def _package_version(name: str) -> str | None:
     try:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _is_audio_format_error(exc: Exception) -> bool:
+    message = f"{exc.__class__.__name__}: {exc}"
+    lowered = message.casefold()
+    return "audioformaterror" in lowered or "generic audio read error" in lowered or "librosa" in lowered
+
+
+def _safe_describe_audio_file(file_path: Path) -> dict[str, object] | None:
+    try:
+        return describe_audio_file(file_path)
+    except Exception:
         return None
