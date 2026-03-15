@@ -942,19 +942,28 @@ function dashboardRenderStatistics() {
   }
 
   statsItems.forEach((item) => {
-    const row = document.createElement("article");
+    const row = document.createElement("details");
     row.className = "species-stat-row";
     const scientific = item.species_scientific_name ? `<span class="species-scientific">${item.species_scientific_name}</span>` : "";
     row.innerHTML = `
-      <div>
-        <strong>${item.species_common_name}</strong>
-        ${scientific}
-      </div>
-      <div class="species-stat-metrics">
-        <span>${item.event_count} event(s)</span>
-        <span>${Math.round((item.average_confidence || 0) * 100)}% avg</span>
-        <span>${Math.round((item.best_confidence || 0) * 100)}% best</span>
-        <span>${item.last_seen_at ? `last ${new Date(item.last_seen_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "-"}</span>
+      <summary class="species-stat-summary">
+        <div class="species-stat-main">
+          <strong>${item.species_common_name}</strong>
+          ${scientific}
+        </div>
+        <div class="species-stat-summary-metrics">
+          <span>${item.event_count} event(s)</span>
+          <span>${Math.round((item.best_confidence || 0) * 100)}% best</span>
+        </div>
+      </summary>
+      <div class="species-stat-body">
+        <div class="species-stat-metrics">
+          <span>${item.event_count} event(s)</span>
+          <span>${item.detection_count || item.event_count} detection(s)</span>
+          <span>${Math.round((item.average_confidence || 0) * 100)}% avg</span>
+          <span>${Math.round((item.best_confidence || 0) * 100)}% best</span>
+          <span>${item.last_seen_at ? `last ${new Date(item.last_seen_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "-"}</span>
+        </div>
       </div>
     `;
     dashboardElements.speciesStatsList.append(row);

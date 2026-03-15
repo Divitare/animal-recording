@@ -906,20 +906,48 @@ button:hover {
 }
 
 .species-stat-row {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(76, 58, 39, 0.08);
+  overflow: hidden;
+}
+
+.species-stat-row[open] {
+  box-shadow: 0 10px 20px rgba(76, 58, 39, 0.08);
+}
+
+.species-stat-summary {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 14px;
   padding: 14px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(76, 58, 39, 0.08);
+  cursor: pointer;
+  list-style: none;
 }
 
-.species-stat-row > div:first-child {
+.species-stat-summary::-webkit-details-marker {
+  display: none;
+}
+
+.species-stat-main {
   min-width: 0;
   display: grid;
   gap: 4px;
+}
+
+.species-stat-body {
+  padding: 0 14px 14px;
+  border-top: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.species-stat-summary-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
 }
 
 .species-scientific {
@@ -997,7 +1025,8 @@ button:hover {
   .recording-item-actions,
   .recording-detection-item,
   .recording-detection-meta,
-  .species-stat-row,
+  .species-stat-summary,
+  .species-stat-summary-metrics,
   .species-stat-metrics {
     flex-direction: column;
     align-items: stretch;
