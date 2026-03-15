@@ -27,10 +27,12 @@ def create_app() -> Flask:
     data_dir = Path(os.getenv("BIRD_MONITOR_DATA_DIR", str(package_root / "data"))).resolve()
     recordings_dir = data_dir / "recordings"
     exports_dir = data_dir / "exports"
+    clips_dir = data_dir / "clips"
 
     data_dir.mkdir(parents=True, exist_ok=True)
     recordings_dir.mkdir(parents=True, exist_ok=True)
     exports_dir.mkdir(parents=True, exist_ok=True)
+    clips_dir.mkdir(parents=True, exist_ok=True)
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config.update(
@@ -40,6 +42,7 @@ def create_app() -> Flask:
         DATA_DIR=str(data_dir),
         RECORDINGS_DIR=str(recordings_dir),
         EXPORTS_DIR=str(exports_dir),
+        CLIPS_DIR=str(clips_dir),
         HOST=os.getenv("BIRD_MONITOR_HOST", "0.0.0.0"),
         PORT=int(os.getenv("BIRD_MONITOR_PORT", "8080")),
         DISABLE_BACKGROUND_RECORDER=_env_flag("BIRD_MONITOR_DISABLE_RECORDER", False),

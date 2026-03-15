@@ -15,9 +15,9 @@
       <header class="hero">
         <div>
           <p class="eyebrow">Bird Monitor</p>
-          <h1>USB microphone recorder with live activity view and bird markers</h1>
+          <h1>USB microphone recorder with BirdNET species timeline and clip extraction</h1>
           <p class="lede">
-            Schedule recordings, start them manually when you want, watch the live waveform, and export any time span as a zip archive.
+            Schedule recordings, start them manually when you want, watch the live waveform, and review BirdNET-confirmed bird detections and saved occurrence clips for any time span.
           </p>
         </div>
         <div class="status-card activity-card" id="status-card">
@@ -45,6 +45,35 @@
               <span id="activity-mode">Idle</span>
             </div>
           </div>
+
+          <section class="pipeline-panel" aria-label="Background processing">
+            <div class="pipeline-head">
+              <h2>Background Pipeline</h2>
+              <p id="pipeline-mode-note">BirdNET checks each segment after recording stops.</p>
+            </div>
+            <div class="pipeline-grid">
+              <article class="pipeline-card" id="pipeline-recording-card">
+                <span class="pipeline-label">Recorder</span>
+                <strong id="pipeline-recording-state">Waiting</strong>
+                <p id="pipeline-recording-detail">The microphone capture loop is idle.</p>
+              </article>
+              <article class="pipeline-card" id="pipeline-birdnet-card">
+                <span class="pipeline-label">BirdNET</span>
+                <strong id="pipeline-birdnet-state">Waiting</strong>
+                <p id="pipeline-birdnet-detail">Analysis starts after a segment has been saved.</p>
+              </article>
+              <article class="pipeline-card" id="pipeline-clips-card">
+                <span class="pipeline-label">Clips</span>
+                <strong id="pipeline-clips-state">Waiting</strong>
+                <p id="pipeline-clips-detail">Detected bird occurrences get their own clip files.</p>
+              </article>
+              <article class="pipeline-card" id="pipeline-result-card">
+                <span class="pipeline-label">Last Result</span>
+                <strong id="pipeline-result-state">No analysis yet</strong>
+                <p id="pipeline-result-detail">BirdNET results from the last finished segment appear here.</p>
+              </article>
+            </div>
+          </section>
 
           <dl class="status-grid">
             <div>
@@ -89,7 +118,7 @@
             </div>
           </form>
           <p class="panel-copy">
-            The dashboard starts with the last six hours. Hover the timeline and use the mouse wheel to zoom, then drag or scroll horizontally to move through time.
+            The dashboard starts with the last six hours. Hover the timeline and use the mouse wheel to zoom, then drag or scroll horizontally to move through time. Bird chips open the saved occurrence clips.
           </p>
         </section>
 

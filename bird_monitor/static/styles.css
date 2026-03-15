@@ -199,6 +199,11 @@ h1 {
   color: #275a72;
 }
 
+.status-pill.is-processing {
+  background: rgba(240, 122, 40, 0.16);
+  color: #9a4f18;
+}
+
 .activity-banner {
   margin-top: 16px;
   padding: 18px 18px 16px;
@@ -231,6 +236,76 @@ h1 {
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.62);
   border: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.pipeline-panel {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.pipeline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pipeline-head h2 {
+  font-size: 1rem;
+}
+
+.pipeline-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  max-width: 34ch;
+  text-align: right;
+}
+
+.pipeline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pipeline-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.pipeline-card.is-active {
+  border-color: rgba(31, 107, 69, 0.3);
+  box-shadow: 0 10px 22px rgba(31, 107, 69, 0.12);
+}
+
+.pipeline-card.is-alert {
+  border-color: rgba(166, 58, 43, 0.28);
+  background: rgba(255, 245, 243, 0.92);
+}
+
+.pipeline-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.pipeline-card strong {
+  font-size: 1.02rem;
+}
+
+.pipeline-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 #waveform-canvas {
@@ -549,6 +624,7 @@ button:hover {
   font-size: 0.88rem;
   white-space: nowrap;
   overflow: hidden;
+  text-decoration: none;
 }
 
 .species-event-chip strong,
@@ -666,6 +742,7 @@ button:hover {
   .activity-top,
   .wave-meta,
   .manual-actions,
+  .pipeline-head,
   .timeline-toolbar,
   .species-stat-row,
   .species-stat-metrics {
@@ -673,11 +750,16 @@ button:hover {
     align-items: stretch;
   }
 
+  .pipeline-head p {
+    text-align: left;
+  }
+
   .status-grid {
     grid-template-columns: 1fr;
   }
 
-  .stats-grid {
+  .stats-grid,
+  .pipeline-grid {
     grid-template-columns: 1fr;
   }
 }

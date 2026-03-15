@@ -167,6 +167,8 @@ class BirdDetection(db.Model):
     species_common_name = db.Column(db.String(255), nullable=True)
     species_scientific_name = db.Column(db.String(255), nullable=True)
     species_score = db.Column(db.Float, nullable=True)
+    clip_file_path = db.Column(db.Text, nullable=True)
+    clip_duration_seconds = db.Column(db.Float, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
 
     def to_dict(self) -> dict[str, object]:
@@ -181,5 +183,7 @@ class BirdDetection(db.Model):
             "species_common_name": self.species_common_name,
             "species_scientific_name": self.species_scientific_name,
             "species_score": self.species_score,
+            "clip_file_path": self.clip_file_path,
+            "clip_duration_seconds": self.clip_duration_seconds,
             "created_at": utc_iso(self.created_at),
         }

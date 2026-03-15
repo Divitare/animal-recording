@@ -56,6 +56,8 @@ def ensure_schema() -> None:
             "species_scientific_name",
             "species_scientific_name VARCHAR(255)",
         )
+        _add_column_if_missing("bird_detections", columns, "clip_file_path", "clip_file_path TEXT")
+        _add_column_if_missing("bird_detections", columns, "clip_duration_seconds", "clip_duration_seconds REAL")
         db.session.execute(
             text(
                 """

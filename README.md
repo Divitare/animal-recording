@@ -1,6 +1,6 @@
 # Bird Monitor
 
-Bird Monitor is a Flask-based USB microphone recorder for bird sound monitoring. It stores audio files, marks likely bird activity in a timeline, lets you define recurring recording schedules, and can export a selected time span as a zip archive.
+Bird Monitor is a Flask-based USB microphone recorder for bird sound monitoring. It stores audio files, runs BirdNET on each finished recording segment, extracts separate audio clips for detected bird occurrences, and shows those detections in a timeline.
 
 ## What it does
 
@@ -8,8 +8,9 @@ Bird Monitor is a Flask-based USB microphone recorder for bird sound monitoring.
 - Lets you manually start and stop recording from the browser
 - Shows the live microphone waveform and current recorder activity
 - Stores each recording segment as a WAV file and tracks metadata in SQLite
-- Detects likely bird activity inside each segment and marks those moments in the timeline
-- Can analyze each saved recording with BirdNET and show species detections with timestamps in the timeline
+- Runs BirdNET on each finished recording segment and only creates bird events when BirdNET detects and classifies a bird
+- Saves each BirdNET-detected bird occurrence as a separate audio clip
+- Shows BirdNET detections with timestamps, species labels, confidence, and clip links in the timeline
 - Shows past recordings in a continuous, zoomable web timeline
 - Starts the dashboard on the last six hours and lets you zoom the timeline with the mouse wheel
 - Lets you download every recording that overlaps a selected time span
@@ -18,7 +19,7 @@ Bird Monitor is a Flask-based USB microphone recorder for bird sound monitoring.
 ## Species detection
 
 Exact species detection is possible, but not perfectly reliable. In practice it usually needs a dedicated bird-classification model such as BirdNET plus a good microphone, clean audio, and regional context. This project can analyze each saved recording with BirdNET after capture and can use the configured latitude, longitude, and recording date to narrow down likely species for that region and season.
-The Linux installer attempts to install the BirdNET runtime automatically and verifies it during setup. For local development, install `birdnetlib`, `librosa`, and either `tflite-runtime` or `tensorflow` if you want species labels during testing.
+The Linux installer attempts to install the BirdNET runtime automatically and verifies it during setup. The installer now stops with an error if BirdNET is still unavailable after installation, so the server does not come up without working species detection. For local development, install `birdnetlib`, `librosa`, and either `tflite-runtime` or `tensorflow` if you want species labels during testing.
 
 ## Local development
 
@@ -58,6 +59,7 @@ The installer will:
 - create a Python virtual environment
 - install Python dependencies
 - verify that BirdNET can actually be imported and used
+- stop the installation if BirdNET still cannot run
 - initialize the database
 - start the server with `systemd` when available, or with `nohup` otherwise
 

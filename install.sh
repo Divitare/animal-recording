@@ -330,7 +330,7 @@ install_species_runtime() {
   elif "${VENV_DIR}/bin/pip" install birdnetlib librosa; then
     log "Installed BirdNET Python packages."
   else
-    warn "BirdNET Python packages could not be installed automatically. Recording will still work, but species labels will remain unavailable until birdnetlib and librosa are installed in ${VENV_DIR}."
+    warn "BirdNET Python packages could not be installed automatically."
     return
   fi
 
@@ -349,7 +349,7 @@ install_species_runtime() {
     return
   fi
 
-  warn "BirdNET runtime packages could not be installed automatically. Recording will still work, but species labels will remain unavailable until TensorFlow Lite or TensorFlow is installed in ${VENV_DIR}."
+  warn "BirdNET runtime packages could not be installed automatically."
 }
 
 verify_species_runtime() {
@@ -375,10 +375,10 @@ PY
     return
   fi
 
-  warn "BirdNET verification did not pass. Species labels will remain unavailable until the reported dependency issue is fixed."
   if [[ -n "${verify_output}" ]]; then
     printf '%s\n' "${verify_output}"
   fi
+  die "BirdNET verification did not pass. Installation stopped so the system does not start without working species detection."
 }
 
 initialize_database() {

@@ -35,9 +35,25 @@ def parse_client_datetime(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def serialize_detection(detection: BirdDetection) -> dict[str, object]:
+    payload = detection.to_dict()
+    payload["clip_url"] = (
+        url_for("api.download_detection_clip", detection_id=detection.id)
+        if detection.clip_file_path
+        else None
+    )
+    payload["recording_audio_url"] = url_for("api.download_recording_audio", recording_id=detection.recording_id)
+    return payload
+
+
 def serialize_recording(recording: Recording) -> dict[str, object]:
     payload = recording.to_dict()
     payload["audio_url"] = url_for("api.download_recording_audio", recording_id=recording.id)
+    payload["detections"] = [
+        serialize_detection(detection)
+        for detection in recording.detections
+        if detection.species_common_name
+    ]
     return payload
 
 
@@ -57,7 +73,7 @@ def status():
             "settings": settings.to_dict(),
             "totals": {
                 "recordings": Recording.query.count(),
-                "detections": BirdDetection.query.count(),
+                "detections": BirdDetection.query.filter(BirdDetection.species_common_name.is_not(None)).count(),
             },
         }
     )
@@ -279,6 +295,12 @@ def list_recordings():
         .order_by(Recording.started_at.asc())
         .all()
     )
+    detections = [
+        detection
+        for recording in recordings
+        for detection in recording.detections
+        if detection.species_common_name
+    ]
     species_events = build_species_events(recordings)
     species_stats = build_species_statistics(species_events)
     return jsonify(
@@ -288,6 +310,7 @@ def list_recordings():
                 "end": end_at.replace(tzinfo=timezone.utc).isoformat(),
             },
             "items": [serialize_recording(item) for item in recordings],
+            "detections": [serialize_detection(item) for item in detections],
             "species_events": [event.to_dict() for event in species_events],
             "species_stats": species_stats,
             "species_event_merge_gap_seconds": SPECIES_EVENT_MERGE_GAP_SECONDS,
@@ -302,6 +325,19 @@ def download_recording_audio(recording_id: int):
     if not file_path.exists():
         return _json_error("Audio file is missing on disk.", 404)
     return send_file(file_path, as_attachment=True, download_name=file_path.name)
+
+
+@api_bp.get("/detections/<int:detection_id>/clip")
+def download_detection_clip(detection_id: int):
+    detection = BirdDetection.query.get_or_404(detection_id)
+    if not detection.clip_file_path:
+        return _json_error("No separate clip was saved for this detection.", 404)
+
+    file_path = Path(detection.clip_file_path)
+    if not file_path.exists():
+        return _json_error("Detection clip is missing on disk.", 404)
+
+    return send_file(file_path, as_attachment=False, download_name=file_path.name)
 
 
 @api_bp.get("/export")

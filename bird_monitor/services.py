@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import re
 import threading
 from collections import deque
 from datetime import datetime, timedelta
@@ -9,12 +10,18 @@ from pathlib import Path
 import numpy as np
 from flask import Flask
 
-from .audio import list_input_devices, peak_amplitude, record_segment, save_capture
-from .detection import detect_bird_activity
+from .audio import (
+    extract_clip_samples,
+    list_input_devices,
+    peak_amplitude,
+    record_segment,
+    save_audio_samples,
+    save_capture,
+)
 from .extensions import db
 from .models import BirdDetection, RecorderSettings, Recording, RecordingSchedule, utc_iso
 from .scheduler import get_active_windows
-from .species import build_species_classifier, prediction_overlaps_event
+from .species import SpeciesPrediction, build_species_classifier
 
 
 class RecordingManager:
@@ -46,6 +53,13 @@ class RecordingManager:
             "species_available": self._species_classifier.available(),
             "species_enabled": False,
             "species_error": getattr(self._species_classifier, "failure_reason", None),
+            "processing_stage": "idle",
+            "processing_message": "Recorder is waiting. BirdNET analyzes finished segments after recording stops.",
+            "last_processing_summary": "No BirdNET analysis has completed yet.",
+            "last_detection_count": 0,
+            "last_clip_count": 0,
+            "last_detected_species": [],
+            "birdnet_matches_after_recording": True,
         }
 
     def start(self) -> None:
@@ -67,6 +81,8 @@ class RecordingManager:
             manual_mode=True,
             activity_reason="manual-armed",
             activity_message="Manual recording requested. The next segment will start immediately.",
+            processing_stage="armed",
+            processing_message="Manual recording is armed. BirdNET will analyze the segment after it ends.",
             last_error=None,
         )
 
@@ -77,6 +93,7 @@ class RecordingManager:
         self._set_status(
             manual_mode=False,
             activity_message="Stopping manual recording...",
+            processing_message="Stopping the current manual workflow...",
         )
 
     def get_status(self, include_devices: bool = True) -> dict[str, object]:
@@ -149,6 +166,77 @@ class RecordingManager:
             species_error = getattr(self._species_classifier, "failure_reason", None) or "BirdNET is unavailable."
         return requested_provider, species_available, species_enabled, species_error
 
+    def _build_recording_summary(self, predictions: list[SpeciesPrediction]) -> tuple[str, list[str]]:
+        if not predictions:
+            return "BirdNET finished. No bird species were detected in the last segment.", []
+
+        ordered_names: list[str] = []
+        for prediction in sorted(predictions, key=lambda item: item.confidence, reverse=True):
+            if prediction.common_name not in ordered_names:
+                ordered_names.append(prediction.common_name)
+
+        top_names = ", ".join(ordered_names[:4])
+        summary = (
+            f"BirdNET found {len(predictions)} detected bird occurrence(s) "
+            f"across {len(ordered_names)} species: {top_names}."
+        )
+        return summary, ordered_names
+
+    def _build_detection_clip_path(self, detected_at: datetime, common_name: str, detection_index: int) -> Path:
+        root = Path(self.app.config["CLIPS_DIR"])
+        day_path = root / detected_at.strftime("%Y") / detected_at.strftime("%m") / detected_at.strftime("%d")
+        safe_name = re.sub(r"[^a-z0-9]+", "-", common_name.casefold()).strip("-") or "bird"
+        filename = f"detection_{detected_at.strftime('%Y%m%dT%H%M%S_%f')}_{detection_index:02d}_{safe_name}.wav"
+        return day_path / filename
+
+    def _create_species_detections(
+        self,
+        *,
+        capture_samples: np.ndarray,
+        sample_rate: int,
+        recording_started_at: datetime,
+        predictions: list[SpeciesPrediction],
+    ) -> tuple[list[BirdDetection], list[Path]]:
+        detections: list[BirdDetection] = []
+        clip_paths: list[Path] = []
+
+        for index, prediction in enumerate(predictions, start=1):
+            started_at = recording_started_at + timedelta(seconds=prediction.start_offset_seconds)
+            ended_at = recording_started_at + timedelta(seconds=prediction.end_offset_seconds)
+            clip_path = self._build_detection_clip_path(started_at, prediction.common_name, index)
+            clip_samples = extract_clip_samples(
+                capture_samples,
+                sample_rate,
+                prediction.start_offset_seconds,
+                prediction.end_offset_seconds,
+            )
+
+            clip_file_path: str | None = None
+            clip_duration_seconds: float | None = None
+            if clip_samples.size > 0:
+                save_audio_samples(clip_samples, sample_rate, clip_path)
+                clip_paths.append(clip_path)
+                clip_file_path = str(clip_path)
+                clip_duration_seconds = float(clip_samples.shape[0] / max(sample_rate, 1))
+
+            detections.append(
+                BirdDetection(
+                    recording_id=0,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    confidence=prediction.confidence,
+                    dominant_frequency_hz=0.0,
+                    source="birdnet",
+                    species_common_name=prediction.common_name,
+                    species_scientific_name=prediction.scientific_name,
+                    species_score=prediction.confidence,
+                    clip_file_path=clip_file_path,
+                    clip_duration_seconds=clip_duration_seconds,
+                )
+            )
+
+        return detections, clip_paths
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
             with self.app.app_context():
@@ -173,6 +261,8 @@ class RecordingManager:
                         active_schedule_names=[],
                         activity_reason="idle",
                         activity_message="Idle. Waiting for a schedule or a manual start.",
+                        processing_stage="idle",
+                        processing_message="Recorder is waiting. BirdNET only runs after a finished recording segment is saved.",
                         segment_started_at=None,
                         last_checked_at=utc_iso(datetime.utcnow()),
                     )
@@ -200,11 +290,14 @@ class RecordingManager:
                     active_schedule_names=active_schedule_names,
                     activity_reason=capture_mode,
                     activity_message=activity_message,
+                    processing_stage="recording",
+                    processing_message="Recording audio now. BirdNET matching will start after this segment stops.",
                     segment_started_at=utc_iso(started_at),
                     last_error=None,
                     last_checked_at=utc_iso(started_at),
                 )
 
+                created_clip_paths: list[Path] = []
                 try:
                     capture = record_segment(
                         duration_seconds=segment_seconds,
@@ -234,6 +327,8 @@ class RecordingManager:
                                     else "Recording stopped before any audio was captured."
                                 )
                             ),
+                            processing_stage="idle",
+                            processing_message="No audio was captured, so BirdNET had nothing to analyze.",
                             segment_started_at=None,
                             last_checked_at=utc_iso(ended_at),
                         )
@@ -244,13 +339,20 @@ class RecordingManager:
                     file_path = self._build_recording_path(started_at)
                     save_capture(capture, file_path)
 
-                    events = detect_bird_activity(
-                        capture.samples,
-                        capture.sample_rate,
-                        min_event_duration_seconds=settings.min_event_duration_seconds,
-                    )
                     species_predictions = []
+                    last_processing_summary = "Species analysis is disabled for this recorder."
+                    detected_species: list[str] = []
+                    if species_provider == "birdnet" and not species_enabled:
+                        last_processing_summary = species_error or "BirdNET is unavailable, so no species analysis was run."
                     if species_enabled:
+                        self._set_status(
+                            is_recording=False,
+                            activity_reason="analyzing",
+                            activity_message="BirdNET is analyzing the finished segment.",
+                            processing_stage="analyzing",
+                            processing_message="BirdNET matching is running now. It happens after recording stops, not in real time.",
+                            segment_started_at=None,
+                        )
                         try:
                             species_predictions = self._species_classifier.classify(
                                 file_path,
@@ -260,43 +362,30 @@ class RecordingManager:
                                 min_confidence=settings.species_min_confidence,
                             )
                             self._set_status(species_error=None)
+                            last_processing_summary, detected_species = self._build_recording_summary(species_predictions)
                         except Exception as exc:
                             self.app.logger.warning("Species detection failed for %s: %s", file_path, exc)
-                            self._set_status(species_error=f"BirdNET analysis failed: {exc}")
+                            failure_message = f"BirdNET analysis failed: {exc}"
+                            last_processing_summary = failure_message
+                            self._set_status(species_error=failure_message)
 
                     timeline_detections: list[BirdDetection] = []
-                    for prediction in species_predictions:
-                        timeline_detections.append(
-                            BirdDetection(
-                                recording_id=0,
-                                started_at=started_at + timedelta(seconds=prediction.start_offset_seconds),
-                                ended_at=started_at + timedelta(seconds=prediction.end_offset_seconds),
-                                confidence=prediction.confidence,
-                                dominant_frequency_hz=0.0,
-                                source="birdnet",
-                                species_common_name=prediction.common_name,
-                                species_scientific_name=prediction.scientific_name,
-                                species_score=prediction.confidence,
-                            )
+                    if species_predictions:
+                        self._set_status(
+                            processing_stage="extracting-clips",
+                            processing_message=f"BirdNET found {len(species_predictions)} occurrence(s). Saving separate clip files now.",
+                        )
+                        timeline_detections, created_clip_paths = self._create_species_detections(
+                            capture_samples=capture.samples,
+                            sample_rate=capture.sample_rate,
+                            recording_started_at=started_at,
+                            predictions=species_predictions,
                         )
 
-                    for event in events:
-                        if any(prediction_overlaps_event(event, prediction) for prediction in species_predictions):
-                            continue
-                        timeline_detections.append(
-                            BirdDetection(
-                                recording_id=0,
-                                started_at=started_at + timedelta(seconds=event.start_offset_seconds),
-                                ended_at=started_at + timedelta(seconds=event.end_offset_seconds),
-                                confidence=event.confidence,
-                                dominant_frequency_hz=event.dominant_frequency_hz,
-                                source="activity",
-                                species_common_name=None,
-                                species_scientific_name=None,
-                                species_score=None,
-                            )
-                        )
-
+                    self._set_status(
+                        processing_stage="saving-results",
+                        processing_message="Saving recording metadata, BirdNET detections, and clip references to the timeline.",
+                    )
                     recording = Recording(
                         file_path=str(file_path),
                         started_at=started_at,
@@ -307,7 +396,7 @@ class RecordingManager:
                         size_bytes=file_path.stat().st_size,
                         peak_amplitude=peak_amplitude(capture.samples),
                         device_name=capture.device_name,
-                        has_bird_activity=bool(events or species_predictions or timeline_detections),
+                        has_bird_activity=bool(species_predictions),
                         bird_event_count=len(timeline_detections),
                     )
                     db.session.add(recording)
@@ -337,10 +426,21 @@ class RecordingManager:
                                 else "Waiting for the next schedule or manual start."
                             )
                         ),
+                        processing_stage="idle",
+                        processing_message="Recorder is waiting. BirdNET will run again after the next finished segment.",
+                        last_processing_summary=last_processing_summary,
+                        last_detection_count=len(timeline_detections),
+                        last_clip_count=len(created_clip_paths),
+                        last_detected_species=detected_species,
                         segment_started_at=None,
                         last_error=None,
                     )
                 except Exception as exc:
+                    for clip_path in created_clip_paths:
+                        try:
+                            clip_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                     db.session.rollback()
                     self.app.logger.exception("Recording loop failed")
                     self._set_status(
@@ -348,6 +448,8 @@ class RecordingManager:
                         manual_mode=self._manual_requested(),
                         activity_reason="idle",
                         activity_message="Recorder error. Check the message below.",
+                        processing_stage="error",
+                        processing_message="The background workflow stopped because of an error.",
                         segment_started_at=None,
                         last_error=str(exc),
                     )

@@ -16,7 +16,6 @@ const settingsElements = {
   sampleRate: document.querySelector("#sample-rate"),
   channels: document.querySelector("#channels"),
   segmentSeconds: document.querySelector("#segment-seconds"),
-  minEventDuration: document.querySelector("#min-event-duration"),
   speciesProvider: document.querySelector("#species-provider"),
   speciesMinConfidence: document.querySelector("#species-min-confidence"),
   locationName: document.querySelector("#location-name"),
@@ -124,7 +123,6 @@ function settingsBindEvents() {
           sample_rate: Number(settingsElements.sampleRate.value),
           channels: Number(settingsElements.channels.value),
           segment_seconds: Number(settingsElements.segmentSeconds.value),
-          min_event_duration_seconds: Number(settingsElements.minEventDuration.value),
           species_provider: settingsElements.speciesProvider.value,
           species_min_confidence: Number(settingsElements.speciesMinConfidence.value),
           location_name: settingsElements.locationName.value.trim(),
@@ -222,7 +220,6 @@ function settingsRenderSettings() {
   settingsElements.deviceIndex.value = settingsState.settings.device_index == null ? "" : `${settingsState.settings.device_index}`;
   settingsElements.deviceName.value = settingsState.settings.device_name || "";
   settingsElements.segmentSeconds.value = `${settingsState.settings.segment_seconds}`;
-  settingsElements.minEventDuration.value = `${settingsState.settings.min_event_duration_seconds}`;
   settingsElements.speciesProvider.value = settingsState.settings.species_provider || "disabled";
   settingsElements.speciesMinConfidence.value = `${settingsState.settings.species_min_confidence ?? 0.35}`;
   settingsElements.locationName.value = settingsState.settings.location_name || "";
@@ -342,7 +339,7 @@ function settingsRenderSpeciesStatus() {
       ? ` for ${settingsElements.locationName.value.trim()}`
       : "";
     const runtimeNote = status.species_error ? ` Last analysis problem: ${status.species_error}` : "";
-    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. Each saved recording is analyzed after capture using the configured coordinates and the recording date.${runtimeNote}`;
+    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. Each saved recording segment is analyzed after it stops using the configured coordinates and the recording date.${runtimeNote}`;
     return;
   }
 
@@ -353,11 +350,11 @@ function settingsRenderSpeciesStatus() {
   }
 
   if (provider === "birdnet") {
-    settingsElements.speciesStatusNote.textContent = "BirdNET is selected. Saved recordings will be analyzed after capture using the configured coordinates and the recording date.";
+    settingsElements.speciesStatusNote.textContent = "BirdNET is selected. Saved recording segments will be analyzed after they stop using the configured coordinates and the recording date.";
     return;
   }
 
-  settingsElements.speciesStatusNote.textContent = "Species analysis is disabled. The timeline will only show generic bird-activity markers.";
+  settingsElements.speciesStatusNote.textContent = "Species analysis is disabled. The timeline will not show bird detections until BirdNET is enabled again.";
 }
 
 function settingsRenderSchedules() {

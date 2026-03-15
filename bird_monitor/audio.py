@@ -200,6 +200,30 @@ def save_capture(capture: AudioCapture, target_path: Path) -> None:
     sf.write(target_path, capture.samples, capture.sample_rate, subtype="PCM_16")
 
 
+def save_audio_samples(samples: np.ndarray, sample_rate: int, target_path: Path) -> None:
+    ensure_audio_runtime()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(target_path, samples, sample_rate, subtype="PCM_16")
+
+
+def extract_clip_samples(
+    samples: np.ndarray,
+    sample_rate: int,
+    start_offset_seconds: float,
+    end_offset_seconds: float,
+    padding_seconds: float = 0.25,
+) -> np.ndarray:
+    if samples.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+
+    total_frames = int(samples.shape[0])
+    start_frame = max(0, int(np.floor((start_offset_seconds - padding_seconds) * sample_rate)))
+    end_frame = min(total_frames, int(np.ceil((end_offset_seconds + padding_seconds) * sample_rate)))
+    if end_frame <= start_frame:
+        return np.zeros_like(samples[:0])
+    return np.asarray(samples[start_frame:end_frame]).copy()
+
+
 def peak_amplitude(samples: np.ndarray) -> float:
     if samples.size == 0:
         return 0.0

@@ -4,6 +4,7 @@ const MAX_ZOOM = 4;
 
 const dashboardState = {
   recordings: [],
+  detections: [],
   speciesEvents: [],
   speciesStats: [],
   range: null,
@@ -45,6 +46,19 @@ const dashboardElements = {
   totalDetections: document.querySelector("#total-detections"),
   currentDevice: document.querySelector("#current-device"),
   speciesState: document.querySelector("#species-state"),
+  pipelineModeNote: document.querySelector("#pipeline-mode-note"),
+  pipelineRecordingCard: document.querySelector("#pipeline-recording-card"),
+  pipelineRecordingState: document.querySelector("#pipeline-recording-state"),
+  pipelineRecordingDetail: document.querySelector("#pipeline-recording-detail"),
+  pipelineBirdnetCard: document.querySelector("#pipeline-birdnet-card"),
+  pipelineBirdnetState: document.querySelector("#pipeline-birdnet-state"),
+  pipelineBirdnetDetail: document.querySelector("#pipeline-birdnet-detail"),
+  pipelineClipsCard: document.querySelector("#pipeline-clips-card"),
+  pipelineClipsState: document.querySelector("#pipeline-clips-state"),
+  pipelineClipsDetail: document.querySelector("#pipeline-clips-detail"),
+  pipelineResultCard: document.querySelector("#pipeline-result-card"),
+  pipelineResultState: document.querySelector("#pipeline-result-state"),
+  pipelineResultDetail: document.querySelector("#pipeline-result-detail"),
 };
 
 function dashboardFetchJson(url, options = {}) {
@@ -245,6 +259,7 @@ async function dashboardLoadRecordings(resetZoom) {
   });
   const payload = await dashboardFetchJson(`/api/recordings?${params.toString()}`);
   dashboardState.recordings = payload.items || [];
+  dashboardState.detections = payload.detections || [];
   dashboardState.speciesEvents = payload.species_events || [];
   dashboardState.speciesStats = payload.species_stats || [];
   dashboardState.mergeGapSeconds = payload.species_event_merge_gap_seconds || 600;
@@ -275,12 +290,15 @@ function dashboardRenderService(service) {
     dashboardElements.serviceState.textContent = isRecording ? "Manual recording" : "Manual ready";
   } else if (reason === "schedule") {
     dashboardElements.serviceState.textContent = isRecording ? "Scheduled recording" : "Watching schedule";
+  } else if (reason === "analyzing") {
+    dashboardElements.serviceState.textContent = "BirdNET analyzing";
   } else {
     dashboardElements.serviceState.textContent = Boolean(service.started) ? "Idle" : "Recorder disabled";
   }
 
   dashboardElements.serviceState.classList.toggle("is-recording", isRecording);
   dashboardElements.serviceState.classList.toggle("is-manual", reason === "manual" || reason === "manual-armed");
+  dashboardElements.serviceState.classList.toggle("is-processing", reason === "analyzing");
   dashboardElements.serviceSummary.textContent = service.activity_message || "Waiting for recorder state...";
   dashboardElements.activityMessage.textContent = service.activity_message || "Waiting for recorder state...";
   dashboardElements.activityDetail.textContent = dashboardBuildActivityDetail(service, activeSchedules);
@@ -292,17 +310,18 @@ function dashboardRenderService(service) {
   dashboardElements.manualStartButton.disabled = manualMode;
   dashboardElements.manualStopButton.disabled = !manualMode;
 
+  dashboardRenderPipeline(service);
   dashboardRenderWaveform(service.waveform_samples || []);
 }
 
 function dashboardBuildSpeciesState(service) {
   if (service.species_enabled) {
-    return "BirdNET species detection active";
+    return "BirdNET species detection active after each segment";
   }
   if (service.species_provider === "birdnet") {
     return service.species_available === false ? "BirdNET unavailable" : "BirdNET selected";
   }
-  return "Activity markers only";
+  return "Species analysis disabled";
 }
 
 function dashboardBuildServiceProblems(service) {
@@ -317,6 +336,9 @@ function dashboardBuildServiceProblems(service) {
 }
 
 function dashboardBuildActivityDetail(service, activeSchedules) {
+  if (service.activity_reason === "analyzing") {
+    return service.processing_message || "BirdNET is checking the finished segment now.";
+  }
   if (service.activity_reason === "manual" || service.activity_reason === "manual-armed" || service.manual_mode) {
     return "Manual control overrides the schedule until you press Stop.";
   }
@@ -330,6 +352,9 @@ function dashboardBuildActivityDetail(service, activeSchedules) {
 }
 
 function dashboardBuildModeLabel(reason, manualMode, isRecording) {
+  if (reason === "analyzing") {
+    return "BirdNET post-processing";
+  }
   if (reason === "manual" || reason === "manual-armed" || manualMode) {
     return isRecording ? "Manual mode live" : "Manual mode armed";
   }
@@ -337,6 +362,76 @@ function dashboardBuildModeLabel(reason, manualMode, isRecording) {
     return isRecording ? "Scheduled recording live" : "Schedule monitoring";
   }
   return "Idle";
+}
+
+function dashboardRenderPipeline(service) {
+  const processingStage = service.processing_stage || "idle";
+  const lastSummary = service.last_processing_summary || "No BirdNET analysis has completed yet.";
+  const clipCount = Number(service.last_clip_count || 0);
+  const detectionCount = Number(service.last_detection_count || 0);
+  const detectedSpecies = (service.last_detected_species || []).join(", ");
+
+  dashboardElements.pipelineModeNote.textContent = service.birdnet_matches_after_recording
+    ? "BirdNET checks each finished segment after recording stops. Matching is not real time."
+    : "BirdNET matching mode is unavailable.";
+
+  dashboardSetPipelineCard(
+    dashboardElements.pipelineRecordingCard,
+    dashboardElements.pipelineRecordingState,
+    dashboardElements.pipelineRecordingDetail,
+    service.is_recording ? "Capturing audio" : "Waiting for next segment",
+    service.is_recording
+      ? "The microphone is recording right now."
+      : (service.current_device_name || "BirdNET starts only after a finished segment is saved."),
+    service.is_recording,
+    false,
+  );
+
+  const birdnetUnavailable = service.species_provider === "birdnet" && service.species_available === false;
+  const birdnetActive = processingStage === "analyzing";
+  dashboardSetPipelineCard(
+    dashboardElements.pipelineBirdnetCard,
+    dashboardElements.pipelineBirdnetState,
+    dashboardElements.pipelineBirdnetDetail,
+    birdnetUnavailable ? "Unavailable" : (birdnetActive ? "Analyzing segment" : "Waiting for next segment"),
+    birdnetUnavailable
+      ? (service.species_error || "BirdNET could not be loaded.")
+      : (birdnetActive ? (service.processing_message || "BirdNET is checking the last finished segment.") : "BirdNET starts only after a segment stops."),
+    birdnetActive,
+    birdnetUnavailable,
+  );
+
+  const clipsActive = processingStage === "extracting-clips";
+  dashboardSetPipelineCard(
+    dashboardElements.pipelineClipsCard,
+    dashboardElements.pipelineClipsState,
+    dashboardElements.pipelineClipsDetail,
+    clipsActive ? "Saving clips" : (clipCount > 0 ? `Saved ${clipCount} clip(s)` : "Waiting for detections"),
+    clipsActive
+      ? (service.processing_message || "Writing separate WAV files for each detected bird occurrence.")
+      : (clipCount > 0 ? "Each detected bird occurrence was saved as its own audio file." : "When BirdNET finds birds, each occurrence gets its own clip file."),
+    clipsActive,
+    false,
+  );
+
+  dashboardSetPipelineCard(
+    dashboardElements.pipelineResultCard,
+    dashboardElements.pipelineResultState,
+    dashboardElements.pipelineResultDetail,
+    detectionCount > 0 ? `${detectionCount} detection(s)` : "No detections in last run",
+    detectionCount > 0 && detectedSpecies
+      ? `${lastSummary} Species: ${detectedSpecies}.`
+      : lastSummary,
+    false,
+    false,
+  );
+}
+
+function dashboardSetPipelineCard(card, stateElement, detailElement, stateText, detailText, isActive, isAlert) {
+  stateElement.textContent = stateText;
+  detailElement.textContent = detailText;
+  card.classList.toggle("is-active", Boolean(isActive));
+  card.classList.toggle("is-alert", Boolean(isAlert));
 }
 
 function dashboardRenderWaveform(samples) {
@@ -451,16 +546,13 @@ function dashboardRenderTimeline() {
     return;
   }
 
-  const totalDetections = dashboardState.recordings.reduce(
-    (sum, recording) => sum + (recording.detections?.length || 0),
-    0,
-  );
-  dashboardElements.timelineSummary.textContent = `${dashboardState.recordings.length} recording segment(s), ${dashboardState.speciesEvents.length} merged species event(s), and ${totalDetections} raw detection(s) between ${dashboardFormatDateTime(dashboardState.range.start)} and ${dashboardFormatDateTime(dashboardState.range.end)}.`;
+  const totalDetections = dashboardState.detections.length;
+  dashboardElements.timelineSummary.textContent = `${dashboardState.recordings.length} recording segment(s), ${totalDetections} BirdNET detection(s), and ${dashboardState.speciesEvents.length} merged event(s) between ${dashboardFormatDateTime(dashboardState.range.start)} and ${dashboardFormatDateTime(dashboardState.range.end)}.`;
   dashboardUpdateZoomLabel();
 
-  if (!dashboardState.recordings.length && !dashboardState.speciesEvents.length) {
+  if (!dashboardState.recordings.length && !dashboardState.detections.length) {
     dashboardElements.timelineEmpty.style.display = "block";
-    dashboardElements.timelineEmpty.textContent = "No recordings or species detections were found in this time span.";
+    dashboardElements.timelineEmpty.textContent = "No recordings or BirdNET detections were found in this time span.";
     return;
   }
 
@@ -487,6 +579,11 @@ function dashboardBuildAxis(width) {
 function dashboardBuildRangeTrack(width) {
   const track = document.createElement("div");
   track.className = "timeline-range-track";
+  const detectionRows = dashboardBuildDetectionRows(width);
+  const detectionRowCount = detectionRows.length
+    ? Math.max(...detectionRows.map((item) => item.rowIndex)) + 1
+    : 1;
+  track.style.minHeight = `${Math.max(220, 64 + (detectionRowCount * 40) + 120)}px`;
 
   const recordingLane = document.createElement("div");
   recordingLane.className = "recording-lane";
@@ -495,12 +592,12 @@ function dashboardBuildRangeTrack(width) {
   });
   track.append(recordingLane);
 
-  const speciesLane = document.createElement("div");
-  speciesLane.className = "species-lane";
-  dashboardState.speciesEvents.forEach((event, index) => {
-    speciesLane.append(dashboardBuildSpeciesEventChip(event, index, width));
+  const detectionLane = document.createElement("div");
+  detectionLane.className = "species-lane";
+  detectionRows.forEach((detectionRow) => {
+    detectionLane.append(dashboardBuildDetectionChip(detectionRow, width));
   });
-  track.append(speciesLane);
+  track.append(detectionLane);
 
   return track;
 }
@@ -567,36 +664,63 @@ function dashboardBuildRecordingTitle(recording, localStart, localEnd) {
   const detections = recording.detections || [];
   const summary = detections.length
     ? detections.map((detection) => dashboardBuildDetectionInline(detection)).join(", ")
-    : "No detections";
+    : "No BirdNET detections";
   return `${localStart.toLocaleTimeString()} - ${localEnd.toLocaleTimeString()} | ${summary}`;
 }
 
-function dashboardBuildSpeciesEventChip(event, index, width) {
-  const chip = document.createElement("div");
-  chip.className = "species-event-chip";
-  chip.style.top = `${10 + ((index % 3) * 38)}px`;
+function dashboardBuildDetectionRows(width) {
+  const rowEndOffsets = [];
+  return dashboardState.detections.map((detection) => {
+    const start = new Date(detection.started_at);
+    const end = new Date(detection.ended_at);
+    const left = dashboardRangeRatio(start) * width;
+    const right = dashboardRangeRatio(end) * width;
+    const label = `${detection.species_common_name} ${Math.round((detection.species_score || detection.confidence || 0) * 100)}%`;
+    const naturalWidth = Math.max(right - left, Math.max(150, (label.length * 7)));
+    const chipWidth = Math.min(Math.max(naturalWidth, 150), 280);
 
-  const start = new Date(event.started_at);
-  const end = new Date(event.ended_at);
+    let rowIndex = rowEndOffsets.findIndex((offset) => left > (offset + 12));
+    if (rowIndex === -1) {
+      rowIndex = rowEndOffsets.length;
+      rowEndOffsets.push(left + chipWidth);
+    } else {
+      rowEndOffsets[rowIndex] = left + chipWidth;
+    }
+
+    return { detection, rowIndex, chipWidth, left };
+  });
+}
+
+function dashboardBuildDetectionChip(detectionRow, width) {
+  const detection = detectionRow.detection;
+  const chip = document.createElement(detection.clip_url ? "a" : "div");
+  chip.className = "species-event-chip";
+  chip.style.top = `${10 + (detectionRow.rowIndex * 38)}px`;
+
+  const start = new Date(detection.started_at);
   const left = dashboardRangeRatio(start) * width;
-  const right = dashboardRangeRatio(end) * width;
-  const naturalWidth = Math.max(right - left, 140);
-  const chipWidth = Math.min(Math.max(naturalWidth, 140), 260);
+  const chipWidth = detectionRow.chipWidth || 160;
   const maxLeft = Math.max(width - chipWidth - 6, 0);
 
   chip.style.left = `${Math.min(left, maxLeft)}px`;
   chip.style.width = `${chipWidth}px`;
-  chip.title = dashboardBuildSpeciesEventTitle(event);
+  chip.title = dashboardBuildDetectionTitle(detection);
+  if (detection.clip_url) {
+    chip.href = detection.clip_url;
+    chip.target = "_blank";
+    chip.rel = "noopener";
+  }
   chip.innerHTML = `
-    <strong>${event.species_common_name}</strong>
-    <span>${Math.round((event.confidence || 0) * 100)}%</span>
+    <strong>${detection.species_common_name}</strong>
+    <span>${Math.round(((detection.species_score != null ? detection.species_score : detection.confidence) || 0) * 100)}%</span>
   `;
   return chip;
 }
 
-function dashboardBuildSpeciesEventTitle(event) {
-  const scientific = event.species_scientific_name ? ` (${event.species_scientific_name})` : "";
-  return `${event.species_common_name}${scientific} | ${dashboardFormatDateTime(event.started_at)} - ${dashboardFormatDateTime(event.ended_at)} | best ${Math.round((event.confidence || 0) * 100)}% | average ${Math.round((event.average_confidence || 0) * 100)}% | ${event.detection_count} merged detection(s)`;
+function dashboardBuildDetectionTitle(detection) {
+  const scientific = detection.species_scientific_name ? ` (${detection.species_scientific_name})` : "";
+  const clipText = detection.clip_url ? "Open saved occurrence clip" : "No separate clip file";
+  return `${detection.species_common_name}${scientific} | ${dashboardFormatDateTime(detection.started_at)} - ${dashboardFormatDateTime(detection.ended_at)} | confidence ${Math.round(((detection.species_score != null ? detection.species_score : detection.confidence) || 0) * 100)}% | ${clipText}`;
 }
 
 function dashboardRenderStatistics() {
@@ -663,7 +787,7 @@ function dashboardRenderStatistics() {
 }
 
 function dashboardBuildDetectionInline(detection) {
-  const label = detection.species_common_name || "Bird activity";
+  const label = detection.species_common_name || "Bird";
   const confidence = detection.species_score != null ? detection.species_score : detection.confidence;
   return `${new Date(detection.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ${label} ${Math.round((confidence || 0) * 100)}%`;
 }
