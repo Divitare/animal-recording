@@ -18,6 +18,7 @@ from .audio import input_setting_supported, list_input_devices, resolve_input_de
 from .extensions import db
 from .geocoding import GeocodingError, geocode_address
 from .models import BirdDetection, RecorderSettings, Recording, RecordingSchedule
+from .runtime_logging import get_recent_birdnet_logs
 from .services import get_background_manager
 
 api_bp = Blueprint("api", __name__)
@@ -63,13 +64,43 @@ def _json_error(message: str, status_code: int = 400):
     return response
 
 
+def _service_snapshot(include_devices: bool) -> dict[str, object]:
+    manager = get_background_manager()
+    if manager is not None:
+        return manager.get_status(include_devices=include_devices)
+
+    return {
+        "started": False,
+        "is_recording": False,
+        "manual_mode": False,
+        "species_provider": "disabled",
+        "species_available": None,
+        "species_enabled": False,
+        "species_error": None,
+        "processing_stage": "idle",
+        "processing_message": "Recorder background service is disabled.",
+        "last_processing_summary": "No BirdNET analysis has run in this process.",
+        "birdnet_runtime_details": None,
+        "birdnet_log_file": current_app.config.get("BIRDNET_LOG_FILE"),
+        "app_log_file": current_app.config.get("APP_LOG_FILE"),
+        "birdnet_last_analysis_target": None,
+        "birdnet_last_analysis_started_at": None,
+        "birdnet_last_analysis_finished_at": None,
+        "birdnet_last_analysis_duration_seconds": None,
+        "birdnet_last_raw_detection_count": 0,
+        "birdnet_last_merged_detection_count": 0,
+        "birdnet_matches_after_recording": True,
+        "waveform_samples": [],
+        "available_devices": [] if include_devices else None,
+    }
+
+
 @api_bp.get("/status")
 def status():
-    manager = get_background_manager()
     settings = RecorderSettings.get_or_create()
     return jsonify(
         {
-            "service": manager.get_status() if manager else {"started": False, "is_recording": False},
+            "service": _service_snapshot(include_devices=True),
             "settings": settings.to_dict(),
             "totals": {
                 "recordings": Recording.query.count(),
@@ -81,10 +112,31 @@ def status():
 
 @api_bp.get("/live")
 def live_status():
-    manager = get_background_manager()
     return jsonify(
         {
-            "service": manager.get_status(include_devices=False) if manager else {"started": False, "is_recording": False},
+            "service": _service_snapshot(include_devices=False),
+        }
+    )
+
+
+@api_bp.get("/birdnet/logs")
+def birdnet_logs():
+    try:
+        limit = min(200, max(1, int(request.args.get("limit", "80"))))
+    except ValueError:
+        return _json_error("The BirdNET log limit must be a number.")
+
+    service = _service_snapshot(include_devices=False)
+    return jsonify(
+        {
+            "items": get_recent_birdnet_logs(limit),
+            "log_file": current_app.config.get("BIRDNET_LOG_FILE"),
+            "app_log_file": current_app.config.get("APP_LOG_FILE"),
+            "runtime": service.get("birdnet_runtime_details"),
+            "last_analysis_target": service.get("birdnet_last_analysis_target"),
+            "last_analysis_started_at": service.get("birdnet_last_analysis_started_at"),
+            "last_analysis_finished_at": service.get("birdnet_last_analysis_finished_at"),
+            "last_analysis_duration_seconds": service.get("birdnet_last_analysis_duration_seconds"),
         }
     )
 

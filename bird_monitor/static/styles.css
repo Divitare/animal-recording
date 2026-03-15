@@ -308,6 +308,65 @@ h1 {
   font-size: 0.9rem;
 }
 
+.birdnet-runtime-grid .stat-card strong {
+  word-break: break-word;
+}
+
+.birdnet-log-console {
+  margin-top: 14px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(76, 58, 39, 0.08);
+  background:
+    linear-gradient(180deg, rgba(24, 23, 21, 0.98), rgba(43, 39, 34, 0.96));
+  color: #f6ecda;
+  font-family: "Consolas", "Menlo", "Monaco", monospace;
+  font-size: 0.86rem;
+}
+
+.birdnet-log-empty {
+  color: rgba(246, 236, 218, 0.72);
+}
+
+.birdnet-log-line {
+  display: grid;
+  grid-template-columns: auto auto minmax(120px, 220px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.birdnet-log-line:last-child {
+  border-bottom: 0;
+}
+
+.birdnet-log-line.is-warning .birdnet-log-level {
+  color: #ffd479;
+}
+
+.birdnet-log-line.is-error .birdnet-log-level,
+.birdnet-log-line.is-critical .birdnet-log-level {
+  color: #ff9b84;
+}
+
+.birdnet-log-time,
+.birdnet-log-logger {
+  color: rgba(246, 236, 218, 0.68);
+}
+
+.birdnet-log-level {
+  font-weight: 700;
+  color: #9fe3b9;
+}
+
+.birdnet-log-message {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 #waveform-canvas {
   width: 100%;
   height: 150px;
@@ -761,5 +820,10 @@ button:hover {
   .stats-grid,
   .pipeline-grid {
     grid-template-columns: 1fr;
+  }
+
+  .birdnet-log-line {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 }

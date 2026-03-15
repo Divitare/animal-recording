@@ -236,6 +236,7 @@ BIRD_MONITOR_SECRET_KEY=$(generate_secret)
 BIRD_MONITOR_HOST=0.0.0.0
 BIRD_MONITOR_PORT=8080
 BIRD_MONITOR_DATA_DIR=${DATA_DIR}
+BIRD_MONITOR_LOG_DIR=${LOG_DIR}
 BIRD_MONITOR_DEVICE_NAME=
 BIRD_MONITOR_DEVICE_INDEX=
 BIRD_MONITOR_SAMPLE_RATE=32000
@@ -252,6 +253,7 @@ EOF
   fi
 
   grep -q '^BIRD_MONITOR_DATA_DIR=' "${ENV_FILE}" || echo "BIRD_MONITOR_DATA_DIR=${DATA_DIR}" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_LOG_DIR=' "${ENV_FILE}" || echo "BIRD_MONITOR_LOG_DIR=${LOG_DIR}" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_HOST=' "${ENV_FILE}" || echo "BIRD_MONITOR_HOST=0.0.0.0" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_PORT=' "${ENV_FILE}" || echo "BIRD_MONITOR_PORT=8080" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_SAMPLE_RATE=' "${ENV_FILE}" || echo "BIRD_MONITOR_SAMPLE_RATE=32000" >> "${ENV_FILE}"
@@ -368,6 +370,12 @@ print(f"available={classifier.available()}")
 reason = getattr(classifier, "failure_reason", None)
 if reason:
     print(f"reason={reason}")
+details = getattr(classifier, "runtime_details", {}) or {}
+if details:
+    print(f"runtime_backend={details.get('runtime_backend', 'unknown')}")
+    print(f"analysis_mode={details.get('analysis_mode', 'unknown')}")
+    for name, version in sorted((details.get("packages") or {}).items()):
+        print(f"package_{name}={version or 'missing'}")
 
 raise SystemExit(0 if classifier.available() else 1)
 PY

@@ -10,6 +10,8 @@ const dashboardState = {
   range: null,
   mergeGapSeconds: 600,
   status: null,
+  birdnetLogs: [],
+  birdnetLogFile: null,
   livePollHandle: null,
   zoomFactor: 1,
   timelineDragPointerId: null,
@@ -59,6 +61,14 @@ const dashboardElements = {
   pipelineResultCard: document.querySelector("#pipeline-result-card"),
   pipelineResultState: document.querySelector("#pipeline-result-state"),
   pipelineResultDetail: document.querySelector("#pipeline-result-detail"),
+  birdnetRuntimeSummary: document.querySelector("#birdnet-runtime-summary"),
+  birdnetInstalledState: document.querySelector("#birdnet-installed-state"),
+  birdnetBackendState: document.querySelector("#birdnet-backend-state"),
+  birdnetLastAnalysisState: document.querySelector("#birdnet-last-analysis-state"),
+  birdnetLastTargetState: document.querySelector("#birdnet-last-target-state"),
+  birdnetPackageSummary: document.querySelector("#birdnet-package-summary"),
+  birdnetLogPath: document.querySelector("#birdnet-log-path"),
+  birdnetLogConsole: document.querySelector("#birdnet-log-console"),
 };
 
 function dashboardFetchJson(url, options = {}) {
@@ -222,8 +232,11 @@ function dashboardBindEvents() {
 }
 
 async function dashboardRefreshAll() {
-  await dashboardLoadStatus();
-  await dashboardLoadRecordings(false);
+  await Promise.all([
+    dashboardLoadStatus(),
+    dashboardLoadRecordings(false),
+    dashboardLoadBirdnetLogs(),
+  ]);
 }
 
 async function dashboardLoadStatus() {
@@ -238,17 +251,27 @@ async function dashboardLoadLiveStatus() {
   dashboardRenderService(payload.service);
 }
 
+async function dashboardLoadBirdnetLogs() {
+  const payload = await dashboardFetchJson("/api/birdnet/logs?limit=80");
+  dashboardState.birdnetLogs = payload.items || [];
+  dashboardState.birdnetLogFile = payload.log_file || null;
+  dashboardRenderBirdnetLogs(payload);
+}
+
 function dashboardStartLivePolling() {
   if (dashboardState.livePollHandle !== null) {
     clearInterval(dashboardState.livePollHandle);
   }
   dashboardState.livePollHandle = window.setInterval(async () => {
     try {
-      await dashboardLoadLiveStatus();
+      await Promise.all([
+        dashboardLoadLiveStatus(),
+        dashboardLoadBirdnetLogs(),
+      ]);
     } catch (error) {
       dashboardShowError(error);
     }
-  }, 1000);
+  }, 1500);
 }
 
 async function dashboardLoadRecordings(resetZoom) {
@@ -311,6 +334,7 @@ function dashboardRenderService(service) {
   dashboardElements.manualStopButton.disabled = !manualMode;
 
   dashboardRenderPipeline(service);
+  dashboardRenderBirdnetRuntime(service);
   dashboardRenderWaveform(service.waveform_samples || []);
 }
 
@@ -432,6 +456,83 @@ function dashboardSetPipelineCard(card, stateElement, detailElement, stateText, 
   detailElement.textContent = detailText;
   card.classList.toggle("is-active", Boolean(isActive));
   card.classList.toggle("is-alert", Boolean(isAlert));
+}
+
+function dashboardRenderBirdnetRuntime(service) {
+  const runtime = service.birdnet_runtime_details || {};
+  const packages = runtime.packages || {};
+  const available = runtime.available === true || service.species_available === true;
+  const disabled = service.species_provider === "disabled" && !available;
+  const installedState = available
+    ? "Ready"
+    : (disabled ? "Disabled" : "Unavailable");
+  const backend = runtime.runtime_backend || "unknown";
+  const lastFinishedAt = service.birdnet_last_analysis_finished_at;
+  const lastDuration = service.birdnet_last_analysis_duration_seconds;
+  const lastTarget = service.birdnet_last_analysis_target;
+  const packageSummary = [
+    `birdnetlib ${packages["birdnetlib"] || "missing"}`,
+    `librosa ${packages["librosa"] || "missing"}`,
+    `tensorflow ${packages["tensorflow"] || "missing"}`,
+    `tflite-runtime ${packages["tflite-runtime"] || "missing"}`,
+  ].join(" | ");
+
+  dashboardElements.birdnetInstalledState.textContent = installedState;
+  dashboardElements.birdnetBackendState.textContent = backend;
+  dashboardElements.birdnetLastAnalysisState.textContent = lastFinishedAt
+    ? `${new Date(lastFinishedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${lastDuration != null ? ` (${Number(lastDuration).toFixed(1)} s)` : ""}`
+    : "No completed run";
+  dashboardElements.birdnetLastTargetState.textContent = lastTarget ? dashboardShortenPath(lastTarget) : "None yet";
+  dashboardElements.birdnetPackageSummary.textContent = `Packages: ${packageSummary}. Analysis mode: ${runtime.analysis_mode || "post-recording"}.`;
+  dashboardElements.birdnetLogPath.textContent = service.birdnet_log_file
+    ? `BirdNET log: ${service.birdnet_log_file}${service.app_log_file ? ` | App log: ${service.app_log_file}` : ""}`
+    : "BirdNET log file path is not available yet.";
+
+  if (available) {
+    dashboardElements.birdnetRuntimeSummary.textContent = service.processing_stage === "analyzing"
+      ? "BirdNET is installed and actively analyzing the last finished segment right now."
+      : "BirdNET is installed. It runs after a recording segment finishes and logs every analysis step below.";
+    return;
+  }
+
+  const reason = runtime.reason || service.species_error || "BirdNET is not available in the current runtime.";
+  dashboardElements.birdnetRuntimeSummary.textContent = `BirdNET is not ready. ${reason}`;
+}
+
+function dashboardRenderBirdnetLogs(payload) {
+  const items = payload.items || [];
+  dashboardElements.birdnetLogConsole.innerHTML = "";
+
+  if (!items.length) {
+    dashboardElements.birdnetLogConsole.innerHTML = `<div class="birdnet-log-empty">No BirdNET log entries yet.</div>`;
+    return;
+  }
+
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = `birdnet-log-line is-${String(item.level || "info").toLowerCase()}`;
+
+    const time = document.createElement("span");
+    time.className = "birdnet-log-time";
+    time.textContent = dashboardFormatLogTimestamp(item.timestamp);
+
+    const level = document.createElement("span");
+    level.className = "birdnet-log-level";
+    level.textContent = item.level || "INFO";
+
+    const logger = document.createElement("span");
+    logger.className = "birdnet-log-logger";
+    logger.textContent = item.thread ? `${item.logger || "birdnet"} @ ${item.thread}` : (item.logger || "birdnet");
+
+    const message = document.createElement("span");
+    message.className = "birdnet-log-message";
+    message.textContent = item.message || "";
+
+    row.append(time, level, logger, message);
+    dashboardElements.birdnetLogConsole.append(row);
+  });
+
+  dashboardElements.birdnetLogConsole.scrollTop = dashboardElements.birdnetLogConsole.scrollHeight;
 }
 
 function dashboardRenderWaveform(samples) {
@@ -822,13 +923,32 @@ function dashboardFormatDateTime(value) {
   return new Date(value).toLocaleString();
 }
 
+function dashboardFormatLogTimestamp(value) {
+  if (!value) {
+    return "--:--:--";
+  }
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function dashboardShortenPath(value) {
+  const normalized = String(value || "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 3) {
+    return normalized;
+  }
+  return `.../${parts.slice(-3).join("/")}`;
+}
+
 async function initDashboard() {
   dashboardSetDefaultRange();
   dashboardBindEvents();
   dashboardRenderWaveform(new Array(120).fill(0));
   try {
-    await dashboardLoadStatus();
-    await dashboardLoadRecordings(true);
+    await Promise.all([
+      dashboardLoadStatus(),
+      dashboardLoadRecordings(true),
+      dashboardLoadBirdnetLogs(),
+    ]);
     dashboardStartLivePolling();
   } catch (error) {
     dashboardShowError(error);

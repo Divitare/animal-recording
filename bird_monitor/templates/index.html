@@ -131,6 +131,36 @@
           <div class="species-stats-list" id="species-stats-list"></div>
         </section>
 
+        <section class="panel birdnet-log-panel">
+          <div class="panel-head">
+            <h2>BirdNET Runtime</h2>
+            <p id="birdnet-runtime-summary">Checking whether BirdNET is installed and ready...</p>
+          </div>
+          <div class="stats-grid birdnet-runtime-grid">
+            <article class="stat-card">
+              <span>Installed</span>
+              <strong id="birdnet-installed-state">Unknown</strong>
+            </article>
+            <article class="stat-card">
+              <span>Backend</span>
+              <strong id="birdnet-backend-state">Unknown</strong>
+            </article>
+            <article class="stat-card">
+              <span>Last analysis</span>
+              <strong id="birdnet-last-analysis-state">No run yet</strong>
+            </article>
+            <article class="stat-card">
+              <span>Last target</span>
+              <strong id="birdnet-last-target-state">None yet</strong>
+            </article>
+          </div>
+          <p class="panel-copy" id="birdnet-package-summary">BirdNET package details will appear here.</p>
+          <p class="panel-copy" id="birdnet-log-path">BirdNET log file path will appear here.</p>
+          <div class="birdnet-log-console" id="birdnet-log-console" aria-live="polite">
+            <div class="birdnet-log-empty">No BirdNET log entries yet.</div>
+          </div>
+        </section>
+
         <section class="panel timeline-panel">
           <div class="panel-head">
             <h2>Continuous Timeline</h2>
