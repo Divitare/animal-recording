@@ -152,6 +152,7 @@ h1 {
   min-width: 0;
 }
 
+.recordings-panel,
 .timeline-panel {
   grid-column: 1 / -1;
 }
@@ -526,6 +527,16 @@ button:hover {
   transform: translateY(-1px);
 }
 
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  border-radius: 14px;
+  padding: 0 16px;
+  text-decoration: none;
+}
+
 .secondary-button {
   background: rgba(47, 36, 23, 0.1);
   color: var(--text);
@@ -775,6 +786,125 @@ button:hover {
   gap: 10px;
 }
 
+.recordings-list {
+  display: grid;
+  gap: 12px;
+}
+
+.recording-item {
+  border-radius: 20px;
+  border: 1px solid rgba(76, 58, 39, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+}
+
+.recording-item[open] {
+  box-shadow: 0 12px 24px rgba(76, 58, 39, 0.08);
+}
+
+.recording-item-summary {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.recording-item-summary::-webkit-details-marker {
+  display: none;
+}
+
+.recording-item-main,
+.recording-item-meta,
+.recording-item-details,
+.recording-item-actions,
+.recording-detection-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.recording-item-main strong {
+  font-size: 1rem;
+}
+
+.recording-item-main span,
+.recording-item-meta span,
+.recording-item-details span,
+.recording-detection-meta span,
+.recording-detection-main span {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.recording-count-chip,
+.recording-species-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(31, 107, 69, 0.12);
+  color: var(--accent);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.recording-species-chip.is-muted {
+  background: rgba(47, 36, 23, 0.08);
+  color: var(--muted);
+}
+
+.recording-species-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 16px 16px;
+}
+
+.recording-item-body {
+  display: grid;
+  gap: 14px;
+  padding: 0 16px 16px;
+  border-top: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.recording-item-actions {
+  padding-top: 16px;
+}
+
+.recording-detections-list {
+  display: grid;
+  gap: 10px;
+}
+
+.recording-detection-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(76, 58, 39, 0.08);
+}
+
+.recording-detection-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.recording-clip-missing {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.recording-empty-state {
+  padding: 18px;
+}
+
 .species-stat-row {
   display: flex;
   justify-content: space-between;
@@ -831,6 +961,7 @@ button:hover {
   .settings-panel,
   .settings-panel-wide,
   .schedule-panel,
+  .recordings-panel,
   .timeline-panel {
     grid-column: auto;
   }
@@ -860,6 +991,12 @@ button:hover {
   .manual-actions,
   .pipeline-head,
   .timeline-toolbar,
+  .recording-item-main,
+  .recording-item-meta,
+  .recording-item-details,
+  .recording-item-actions,
+  .recording-detection-item,
+  .recording-detection-meta,
   .species-stat-row,
   .species-stat-metrics {
     flex-direction: column;

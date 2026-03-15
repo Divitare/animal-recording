@@ -106,6 +106,19 @@ def _service_snapshot(include_devices: bool) -> dict[str, object]:
     }
 
 
+def _remove_file_if_present(path_value: str | None) -> bool:
+    if not path_value:
+        return False
+    file_path = Path(path_value)
+    if not file_path.exists():
+        return False
+    try:
+        file_path.unlink()
+    except OSError:
+        return False
+    return True
+
+
 @api_bp.get("/status")
 def status():
     settings = RecorderSettings.get_or_create()
@@ -445,6 +458,36 @@ def download_recording_audio(recording_id: int):
     if not file_path.exists():
         return _json_error("Audio file is missing on disk.", 404)
     return send_file(file_path, as_attachment=True, download_name=file_path.name)
+
+
+@api_bp.delete("/recordings/<int:recording_id>")
+def delete_recording(recording_id: int):
+    recording = Recording.query.get_or_404(recording_id)
+    payload = serialize_recording(recording)
+    clip_paths = [
+        detection.clip_file_path
+        for detection in recording.detections
+        if detection.clip_file_path
+    ]
+    recording_file_path = recording.file_path
+
+    db.session.delete(recording)
+    db.session.commit()
+
+    deleted_files = 0
+    if _remove_file_if_present(recording_file_path):
+        deleted_files += 1
+    for clip_path in clip_paths:
+        if _remove_file_if_present(clip_path):
+            deleted_files += 1
+
+    _audit_logger().info(
+        "Recording deleted by %s recording=%s deleted_file_count=%s",
+        _request_actor(),
+        payload,
+        deleted_files,
+    )
+    return jsonify({"ok": True, "deleted_file_count": deleted_files, "recording_id": recording_id})
 
 
 @api_bp.get("/detections/<int:detection_id>/clip")
