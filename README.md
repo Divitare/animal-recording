@@ -31,32 +31,38 @@ The Linux installer attempts to install the BirdNET runtime automatically and ve
 
 ## Linux installation
 
-Use `install.sh` on the target Linux machine:
+Use `install.sh` on the target Linux machine.
 
-```bash
-chmod +x install.sh
-./install.sh
-```
+## Quick commands
 
-Single-line command to clone the repo and run `install.sh`:
+Fresh install:
 
 ```bash
 git clone https://github.com/Divitare/animal-recording.git && cd animal-recording && chmod +x install.sh && ./install.sh
 ```
 
-Recommended update command from a fresh checkout:
+Update from a fresh checkout:
 
 ```bash
 cd /root && rm -rf animal-recording-update && git clone https://github.com/Divitare/animal-recording.git animal-recording-update && cd animal-recording-update && chmod +x install.sh && ./install.sh update
 ```
 
-Quick post-update verification:
+Verify the running version after an update:
 
 ```bash
 curl -s http://127.0.0.1:8080/api/status
 ```
 
-The JSON now includes `app.commit`, so you can confirm the running server is actually serving the updated commit.
+The JSON includes `app.commit`, so you can confirm the running server is actually serving the updated commit.
+
+Do not run updates from `/opt/bird-monitor/current`; use the fresh-checkout update command above.
+
+If you prefer the two-step install form, this also works:
+
+```bash
+chmod +x install.sh
+./install.sh
+```
 
 The installer will:
 
