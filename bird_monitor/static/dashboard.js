@@ -608,7 +608,7 @@ function dashboardRenderService(service) {
 
 function dashboardBuildSpeciesState(service) {
   if (service.species_enabled) {
-    return "BirdNET species detection active every 9 seconds during recording";
+    return "BirdNET species detection active with rolling 9-second windows every 3 seconds";
   }
   if (service.species_provider === "birdnet") {
     return service.species_available === false ? "BirdNET unavailable" : "BirdNET selected";
@@ -636,9 +636,9 @@ function dashboardRenderLiveDetections(service) {
   if (service.is_recording) {
     dashboardElements.liveDetectionsSummary.textContent = `Top bird candidates from the most recently analyzed ${liveWindowSeconds}-second window. At most 5 species are shown. ${completedWindows} window(s) completed, ${pendingWindows} pending.`;
   } else if (items.length) {
-    dashboardElements.liveDetectionsSummary.textContent = "Top bird candidates from the last analyzed 9-second window of the most recent recording.";
+    dashboardElements.liveDetectionsSummary.textContent = "Top bird candidates from the last analyzed rolling 9-second window of the most recent recording.";
   } else {
-    dashboardElements.liveDetectionsSummary.textContent = "BirdNET checks each finished 9-second window and shows only the strongest live species candidates.";
+    dashboardElements.liveDetectionsSummary.textContent = "BirdNET checks a rolling 9-second window every 3 seconds and shows only the strongest live species candidates.";
   }
 
   dashboardElements.liveDetectionsList.innerHTML = "";
@@ -646,8 +646,8 @@ function dashboardRenderLiveDetections(service) {
     const empty = document.createElement("div");
     empty.className = "empty-state live-detections-empty";
     empty.textContent = service.is_recording
-      ? "No birds were found in the most recently analyzed 9-second window."
-      : "No birds were found in the last analyzed 9-second window.";
+      ? "No birds were found in the most recently analyzed rolling 9-second window."
+      : "No birds were found in the last analyzed rolling 9-second window.";
     dashboardElements.liveDetectionsList.append(empty);
     return;
   }
@@ -674,7 +674,7 @@ function dashboardBuildActivityDetail(service, activeSchedules) {
     return service.processing_message || "BirdNET is finishing the last live windows now.";
   }
   if (service.activity_reason === "manual" || service.activity_reason === "manual-armed" || service.manual_mode) {
-    return "Manual control overrides the schedule until you press Stop. BirdNET keeps checking finished 9-second windows while recording continues.";
+    return "Manual control overrides the schedule until you press Stop. BirdNET keeps checking rolling 9-second windows every 3 seconds while recording continues.";
   }
   if (activeSchedules.length) {
     return `Active schedules: ${activeSchedules.join(", ")}`;
@@ -713,7 +713,7 @@ function dashboardRenderPipeline(service) {
   const liveDetectedSpecies = (service.live_detected_species || []).join(", ");
 
   dashboardElements.pipelineModeNote.textContent = service.species_enabled
-    ? `BirdNET checks each finished ${service.birdnet_live_window_seconds || 9}-second window while the recording keeps running.`
+    ? `BirdNET checks a rolling ${service.birdnet_live_window_seconds || 9}-second window every ${service.birdnet_live_interval_seconds || 3} seconds while the recording keeps running.`
     : "BirdNET matching mode is unavailable.";
 
   dashboardSetPipelineCard(
@@ -739,11 +739,11 @@ function dashboardRenderPipeline(service) {
       ? (service.species_error || "BirdNET could not be loaded.")
       : (
         birdnetActive
-          ? (service.processing_message || "BirdNET is checking the newest finished 9-second window.")
+          ? (service.processing_message || "BirdNET is checking the newest rolling 9-second window.")
           : (
             lastAnalysisDuration
-              ? `Last ${lastAnalysisScope === "live-window" ? "9-second live window" : "analysis"} finished in ${lastAnalysisDuration}.`
-              : "BirdNET analyzes each finished 9-second window while recording keeps going."
+              ? `Last ${lastAnalysisScope === "live-window" ? "rolling live-window analysis" : "analysis"} finished in ${lastAnalysisDuration}.`
+              : "BirdNET analyzes rolling 9-second windows every 3 seconds while recording keeps going."
           )
       ),
     birdnetActive,
@@ -819,11 +819,11 @@ function dashboardRenderBirdnetRuntime(service) {
 
   if (available) {
     dashboardElements.birdnetRuntimeSummary.textContent = service.birdnet_live_analysis_active
-      ? "BirdNET is installed and actively analyzing the newest finished 9-second window right now."
+      ? "BirdNET is installed and actively analyzing the newest rolling 9-second window right now."
       : (
         lastDuration != null
-          ? `BirdNET is installed. The last ${lastScope === "live-window" ? "9-second live-window analysis" : "analysis"} took ${Number(lastDuration).toFixed(2)} seconds.`
-          : "BirdNET is installed. It analyzes finished 9-second windows during recording and logs every analysis step below."
+          ? `BirdNET is installed. The last ${lastScope === "live-window" ? "rolling live-window analysis" : "analysis"} took ${Number(lastDuration).toFixed(2)} seconds.`
+          : "BirdNET is installed. It analyzes rolling 9-second windows every 3 seconds during recording and logs every analysis step below."
       );
     return;
   }
@@ -1269,7 +1269,7 @@ function dashboardRenderRecordingsList(openLibraryIds = new Set()) {
 
   if (!dashboardState.range) {
     dashboardElements.recordingsSummary.textContent = "No bird clips loaded yet.";
-    dashboardElements.recordingsList.innerHTML = `<div class="empty-state">Load a time range to see BirdNET-confirmed 9-second bird clips.</div>`;
+    dashboardElements.recordingsList.innerHTML = `<div class="empty-state">Load a time range to see BirdNET-confirmed bird clips.</div>`;
     return;
   }
 
@@ -1318,7 +1318,7 @@ function dashboardBuildDetectionLibraryAccordion(detection, openLibraryIds = new
   const speciesStrip = document.createElement("div");
   speciesStrip.className = "recording-species-strip";
   speciesStrip.innerHTML = `
-    <span class="recording-species-chip">Detected in 9-second BirdNET window</span>
+    <span class="recording-species-chip">Detected in rolling BirdNET window</span>
     <span class="recording-species-chip is-muted">${dashboardFormatDateTime(detection.started_at)} - ${dashboardFormatDateTime(detection.ended_at)}</span>
   `;
 

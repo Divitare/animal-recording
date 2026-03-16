@@ -339,7 +339,7 @@ function settingsRenderSpeciesStatus() {
       ? ` for ${settingsElements.locationName.value.trim()}`
       : "";
     const runtimeNote = status.species_error ? ` Last analysis problem: ${status.species_error}` : "";
-    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. It analyzes each finished 9-second window while the recording continues and uses the configured coordinates plus recording date.${runtimeNote}`;
+    settingsElements.speciesStatusNote.textContent = `BirdNET is active${locationText}. It analyzes a rolling 9-second window every 3 seconds while the recording continues and uses the configured coordinates plus recording date.${runtimeNote}`;
     return;
   }
 
@@ -350,7 +350,7 @@ function settingsRenderSpeciesStatus() {
   }
 
   if (provider === "birdnet") {
-    settingsElements.speciesStatusNote.textContent = "BirdNET is selected. It will analyze each finished 9-second window while recording continues, using the configured coordinates and the recording date.";
+    settingsElements.speciesStatusNote.textContent = "BirdNET is selected. It will analyze a rolling 9-second window every 3 seconds while recording continues, using the configured coordinates and the recording date.";
     return;
   }
 

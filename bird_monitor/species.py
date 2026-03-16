@@ -14,6 +14,8 @@ from .audio import describe_audio_file, load_audio_samples, rewrite_audio_file
 from .detection import BirdActivityEvent
 from .runtime_logging import get_birdnet_logger
 
+BIRDNET_SAMPLE_RATE = 48000
+
 
 @dataclass(frozen=True)
 class SpeciesPrediction:
@@ -465,7 +467,10 @@ class BirdNetSpeciesClassifier:
             min_confidence=min_confidence,
         )
         label = source_label or "in-memory-buffer"
-        prepared_samples = np.ascontiguousarray(np.asarray(samples, dtype=np.float32).reshape(-1))
+        prepared_samples, prepared_sample_rate = prepare_live_samples_for_birdnet(
+            np.asarray(samples, dtype=np.float32).reshape(-1),
+            sample_rate=sample_rate,
+        )
         self.last_analysis_details = {
             "started_at": analysis_started_at.isoformat() + "Z",
             "finished_at": None,
@@ -481,10 +486,19 @@ class BirdNetSpeciesClassifier:
         self._logger.info(
             "BirdNET classify request source=%s sample_rate=%s kwargs=%s sample_summary=%s",
             label,
-            sample_rate,
+            prepared_sample_rate,
             _serialize_birdnet_kwargs(kwargs),
-            _summarize_audio_samples(prepared_samples, sample_rate),
+            _summarize_audio_samples(prepared_samples, prepared_sample_rate),
         )
+        if prepared_sample_rate != sample_rate:
+            self._logger.info(
+                "BirdNET live buffer resampled source=%s original_sample_rate=%s target_sample_rate=%s sample_count_before=%s sample_count_after=%s",
+                label,
+                sample_rate,
+                prepared_sample_rate,
+                int(np.asarray(samples).reshape(-1).shape[0]),
+                int(prepared_samples.shape[0]),
+            )
         self._logger.info(
             "BirdNET analysis started for %s size_bytes=%s min_confidence=%.2f latitude=%s longitude=%s recorded_at=%s",
             label,
@@ -498,7 +512,7 @@ class BirdNetSpeciesClassifier:
         try:
             raw_detections = self._analyze_buffer_detections(
                 prepared_samples,
-                sample_rate,
+                prepared_sample_rate,
                 kwargs,
             )
             self._logger.info("BirdNET path strategy succeeded strategy=in-memory-buffer source=%s", label)
@@ -579,6 +593,37 @@ def merge_species_predictions(
 def _clean_optional_text(value: object) -> str | None:
     text = str(value).strip() if value is not None else ""
     return text or None
+
+
+def prepare_live_samples_for_birdnet(
+    samples: np.ndarray,
+    *,
+    sample_rate: int,
+    target_sample_rate: int = BIRDNET_SAMPLE_RATE,
+) -> tuple[np.ndarray, int]:
+    prepared = np.ascontiguousarray(np.asarray(samples, dtype=np.float32).reshape(-1))
+    prepared = np.nan_to_num(prepared, nan=0.0, posinf=1.0, neginf=-1.0)
+    prepared = np.clip(prepared, -1.0, 1.0)
+
+    if sample_rate == target_sample_rate or prepared.size == 0:
+        return prepared, int(sample_rate)
+
+    try:
+        import resampy
+    except Exception as exc:  # pragma: no cover - depends on optional runtime package import behavior
+        raise RuntimeError(
+            "BirdNET live analysis requires resampy to resample microphone audio to 48 kHz."
+        ) from exc
+
+    resampled = resampy.resample(
+        prepared,
+        int(sample_rate),
+        int(target_sample_rate),
+        filter="kaiser_fast",
+    )
+    resampled = np.nan_to_num(np.asarray(resampled, dtype=np.float32).reshape(-1), nan=0.0, posinf=1.0, neginf=-1.0)
+    resampled = np.clip(resampled, -1.0, 1.0)
+    return np.ascontiguousarray(resampled), int(target_sample_rate)
 
 
 def _describe_runtime_issue(exc: Exception) -> str:

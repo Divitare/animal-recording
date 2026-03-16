@@ -105,7 +105,7 @@ def _service_snapshot(include_devices: bool) -> dict[str, object]:
         "birdnet_live_analysis_enabled": False,
         "birdnet_live_analysis_active": False,
         "birdnet_live_window_seconds": 9,
-        "birdnet_live_interval_seconds": 9,
+        "birdnet_live_interval_seconds": 3,
         "birdnet_live_pending_windows": 0,
         "birdnet_live_completed_windows": 0,
         "birdnet_live_last_window_started_at": None,

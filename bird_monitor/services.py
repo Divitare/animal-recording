@@ -24,8 +24,10 @@ from .scheduler import get_active_windows
 from .species import build_species_classifier
 
 LIVE_BIRDNET_WINDOW_SECONDS = 9
+LIVE_BIRDNET_STEP_SECONDS = 3
 MINIMUM_LIVE_ANALYSIS_SECONDS = 3
 LIVE_DETECTION_PREVIEW_LIMIT = 5
+SESSION_DETECTION_MERGE_GAP_SECONDS = 1.5
 
 
 @dataclass(frozen=True)
@@ -38,12 +40,17 @@ class SessionSpeciesDetection:
 
 
 class AnalysisWindowAccumulator:
-    def __init__(self, window_frames: int) -> None:
+    def __init__(self, window_frames: int, step_frames: int | None = None) -> None:
         self.window_frames = window_frames
+        self.step_frames = step_frames if step_frames is not None else window_frames
+        if self.step_frames <= 0:
+            raise ValueError("step_frames must be greater than zero.")
         self._chunks: deque[np.ndarray] = deque()
         self._frame_count = 0
+        self._buffer_start_frame = 0
+        self._next_window_start_frame = 0
 
-    def push(self, chunk: np.ndarray) -> list[np.ndarray]:
+    def push(self, chunk: np.ndarray) -> list[tuple[np.ndarray, int]]:
         prepared = np.asarray(chunk, dtype=np.float32).copy()
         if prepared.ndim == 1:
             prepared = prepared.reshape(-1, 1)
@@ -51,39 +58,64 @@ class AnalysisWindowAccumulator:
         self._chunks.append(prepared)
         self._frame_count += int(prepared.shape[0])
 
-        windows: list[np.ndarray] = []
-        while self._frame_count >= self.window_frames:
-            windows.append(self._pop_frames(self.window_frames))
+        windows: list[tuple[np.ndarray, int]] = []
+        while self._buffer_end_frame >= (self._next_window_start_frame + self.window_frames):
+            relative_start = self._next_window_start_frame - self._buffer_start_frame
+            windows.append((self._slice_frames(relative_start, self.window_frames), self._next_window_start_frame))
+            self._next_window_start_frame += self.step_frames
+            self._drop_frames_before(self._next_window_start_frame)
         return windows
 
-    def flush_remainder(self, min_frames: int) -> np.ndarray | None:
-        if self._frame_count < min_frames:
+    def flush_remainder(self, min_frames: int) -> tuple[np.ndarray, int] | None:
+        remaining_frames = self._buffer_end_frame - self._next_window_start_frame
+        if remaining_frames < min_frames:
             return None
-        return self._pop_frames(self._frame_count)
+        relative_start = self._next_window_start_frame - self._buffer_start_frame
+        remainder = self._slice_frames(relative_start, remaining_frames)
+        start_frame = self._next_window_start_frame
+        self._next_window_start_frame = self._buffer_end_frame
+        self._drop_frames_before(self._next_window_start_frame)
+        return remainder, start_frame
 
-    def _pop_frames(self, frame_count: int) -> np.ndarray:
+    @property
+    def _buffer_end_frame(self) -> int:
+        return self._buffer_start_frame + self._frame_count
+
+    def _slice_frames(self, relative_start_frame: int, frame_count: int) -> np.ndarray:
         remaining_frames = frame_count
+        skip_frames = max(relative_start_frame, 0)
         pieces: list[np.ndarray] = []
 
-        while remaining_frames > 0 and self._chunks:
-            chunk = self._chunks[0]
+        for chunk in self._chunks:
+            if remaining_frames <= 0:
+                break
             chunk_frames = int(chunk.shape[0])
-            if chunk_frames <= remaining_frames:
-                pieces.append(chunk)
-                self._chunks.popleft()
-                remaining_frames -= chunk_frames
+            if skip_frames >= chunk_frames:
+                skip_frames -= chunk_frames
                 continue
 
-            pieces.append(chunk[:remaining_frames].copy())
-            self._chunks[0] = chunk[remaining_frames:].copy()
-            remaining_frames = 0
-
-        consumed_frames = frame_count - remaining_frames
-        self._frame_count = max(self._frame_count - consumed_frames, 0)
+            local_start = skip_frames
+            available_frames = chunk_frames - local_start
+            take_frames = min(available_frames, remaining_frames)
+            pieces.append(chunk[local_start:local_start + take_frames].copy())
+            remaining_frames -= take_frames
+            skip_frames = 0
 
         if not pieces:
             return np.zeros((0, 1), dtype=np.float32)
         return np.concatenate(pieces, axis=0)
+
+    def _drop_frames_before(self, target_start_frame: int) -> None:
+        while self._chunks and self._buffer_start_frame < target_start_frame:
+            chunk = self._chunks[0]
+            chunk_frames = int(chunk.shape[0])
+            drop_frames = min(target_start_frame - self._buffer_start_frame, chunk_frames)
+            if drop_frames >= chunk_frames:
+                self._chunks.popleft()
+            else:
+                self._chunks[0] = chunk[drop_frames:].copy()
+            self._buffer_start_frame += drop_frames
+            self._frame_count = max(self._frame_count - drop_frames, 0)
 
 
 class RecordingManager:
@@ -125,7 +157,7 @@ class RecordingManager:
             "birdnet_log_file": self.app.config.get("BIRDNET_LOG_FILE"),
             "app_log_file": self.app.config.get("APP_LOG_FILE"),
             "birdnet_live_window_seconds": LIVE_BIRDNET_WINDOW_SECONDS,
-            "birdnet_live_interval_seconds": LIVE_BIRDNET_WINDOW_SECONDS,
+            "birdnet_live_interval_seconds": LIVE_BIRDNET_STEP_SECONDS,
             "birdnet_live_analysis_enabled": self._species_classifier.available(),
             "birdnet_live_analysis_active": False,
             "birdnet_live_pending_windows": 0,
@@ -136,7 +168,7 @@ class RecordingManager:
             "live_detected_species": [],
             "live_detections": [],
             "processing_stage": "idle",
-            "processing_message": "Recorder is waiting. BirdNET checks each finished 9-second window while recording continues.",
+            "processing_message": "Recorder is waiting. BirdNET analyzes rolling 9-second windows every 3 seconds while recording continues.",
             "last_processing_summary": "No BirdNET analysis has completed yet.",
             "last_detection_count": 0,
             "last_clip_count": 0,
@@ -180,7 +212,7 @@ class RecordingManager:
             activity_reason="manual-armed",
             activity_message="Manual recording requested. Recording will continue until you press Stop.",
             processing_stage="armed",
-            processing_message="Manual recording is armed. BirdNET will analyze each finished 9-second window while recording continues.",
+            processing_message="Manual recording is armed. BirdNET will analyze rolling 9-second windows every 3 seconds while recording continues.",
             last_error=None,
         )
 
@@ -275,7 +307,7 @@ class RecordingManager:
     def _runtime_details(self) -> dict[str, object]:
         details = dict(getattr(self._species_classifier, "runtime_details", {}) or {})
         details.setdefault("provider", "birdnet")
-        details["analysis_mode"] = "continuous-live-9-second-windows"
+        details["analysis_mode"] = "continuous-live-9-second-windows-every-3-seconds"
         details.setdefault("available", self._species_classifier.available())
         if not details.get("reason") and getattr(self._species_classifier, "failure_reason", None):
             details["reason"] = getattr(self._species_classifier, "failure_reason")
@@ -319,6 +351,45 @@ class RecordingManager:
             if detection.species_common_name not in ordered_names:
                 ordered_names.append(detection.species_common_name)
         return ordered_names
+
+    def _merge_session_detections(
+        self,
+        detections: list[SessionSpeciesDetection],
+        *,
+        max_gap_seconds: float = SESSION_DETECTION_MERGE_GAP_SECONDS,
+    ) -> list[SessionSpeciesDetection]:
+        if not detections:
+            return []
+
+        ordered = sorted(
+            detections,
+            key=lambda item: (item.species_common_name, item.species_scientific_name or "", item.started_at, item.ended_at),
+        )
+        merged: list[SessionSpeciesDetection] = []
+
+        for detection in ordered:
+            if not merged:
+                merged.append(detection)
+                continue
+
+            current = merged[-1]
+            if (
+                detection.species_common_name == current.species_common_name
+                and detection.species_scientific_name == current.species_scientific_name
+                and detection.started_at <= (current.ended_at + timedelta(seconds=max_gap_seconds))
+            ):
+                merged[-1] = SessionSpeciesDetection(
+                    started_at=min(current.started_at, detection.started_at),
+                    ended_at=max(current.ended_at, detection.ended_at),
+                    confidence=max(current.confidence, detection.confidence),
+                    species_common_name=current.species_common_name,
+                    species_scientific_name=current.species_scientific_name,
+                )
+                continue
+
+            merged.append(detection)
+
+        return sorted(merged, key=lambda item: item.started_at)
 
     def _top_live_window_species(self, detections: list[SessionSpeciesDetection]) -> list[SessionSpeciesDetection]:
         best_by_species: dict[tuple[str, str | None], SessionSpeciesDetection] = {}
@@ -483,7 +554,7 @@ class RecordingManager:
                     app_log_file=self.app.config.get("APP_LOG_FILE"),
                     birdnet_live_analysis_enabled=species_enabled,
                     birdnet_live_window_seconds=LIVE_BIRDNET_WINDOW_SECONDS,
-                    birdnet_live_interval_seconds=LIVE_BIRDNET_WINDOW_SECONDS,
+                    birdnet_live_interval_seconds=LIVE_BIRDNET_STEP_SECONDS,
                 )
                 local_now = datetime.now().astimezone()
                 schedules = RecordingSchedule.query.filter_by(enabled=True).all()
@@ -499,7 +570,7 @@ class RecordingManager:
                         activity_reason="idle",
                         activity_message="Idle. Waiting for a schedule or a manual start.",
                         processing_stage="idle",
-                        processing_message="Recorder is waiting. BirdNET checks each finished 9-second window while recording continues.",
+                        processing_message="Recorder is waiting. BirdNET analyzes rolling 9-second windows every 3 seconds while recording continues.",
                         segment_started_at=None,
                         birdnet_live_analysis_active=False,
                         birdnet_live_pending_windows=0,
@@ -522,8 +593,9 @@ class RecordingManager:
                 started_at = datetime.utcnow()
                 file_path = self._build_recording_path(started_at)
                 live_window_frames = max(1, int(settings.sample_rate * LIVE_BIRDNET_WINDOW_SECONDS))
+                live_step_frames = max(1, int(settings.sample_rate * LIVE_BIRDNET_STEP_SECONDS))
                 minimum_live_frames = max(1, int(settings.sample_rate * MINIMUM_LIVE_ANALYSIS_SECONDS))
-                live_window_accumulator = AnalysisWindowAccumulator(live_window_frames)
+                live_window_accumulator = AnalysisWindowAccumulator(live_window_frames, live_step_frames)
                 session_lock = threading.Lock()
                 session_detections: list[SessionSpeciesDetection] = []
                 latest_live_window_detections: list[SessionSpeciesDetection] = []
@@ -531,7 +603,6 @@ class RecordingManager:
                 pending_window_count = 0
                 completed_window_count = 0
                 successful_window_count = 0
-                submitted_frames_total = 0
                 submitted_window_count = 0
                 live_failures: list[str] = []
 
@@ -557,9 +628,9 @@ class RecordingManager:
                         live_detections=preview,
                         processing_message=message
                         or (
-                            "Recording audio now. BirdNET is analyzing each finished 9-second window in parallel."
+                            "Recording audio now. BirdNET is analyzing rolling 9-second windows every 3 seconds in parallel."
                             if pending_count > 0
-                            else "Recording audio now. BirdNET is caught up with the finished 9-second windows."
+                            else "Recording audio now. BirdNET is caught up with the rolling 9-second windows."
                         ),
                     )
 
@@ -599,13 +670,15 @@ class RecordingManager:
                         session_detections.extend(detections)
                         session_detections.sort(key=lambda item: item.started_at)
                         latest_live_window_detections = self._top_live_window_species(detections)
+                        merged_session_count = len(self._merge_session_detections(session_detections))
 
                     self._birdnet_logger.info(
-                        "Live BirdNET window completed index=%s started_at=%s ended_at=%s detections=%s species=%s",
+                        "Live BirdNET window completed index=%s started_at=%s ended_at=%s detections=%s merged_session_detections=%s species=%s",
                         summary["window_index"],
                         summary["window_started_at"],
                         summary["window_ended_at"],
                         len(summary["detections"]),
+                        merged_session_count,
                         ", ".join(summary["species"]) if summary["species"] else "none",
                     )
                     self._set_status(
@@ -622,7 +695,7 @@ class RecordingManager:
                         birdnet_live_last_window_ended_at=summary["window_ended_at"],
                     )
                     refresh_live_status(
-                        "Recording audio now. BirdNET is analyzing each finished 9-second window in parallel."
+                        "Recording audio now. BirdNET is analyzing rolling 9-second windows every 3 seconds in parallel."
                     )
 
                 def submit_live_window(window_samples: np.ndarray, window_started_at: datetime) -> None:
@@ -656,24 +729,22 @@ class RecordingManager:
                         analysis_futures.add(future)
                     future.add_done_callback(handle_live_window_completion)
                     refresh_live_status(
-                        "Recording audio now. BirdNET is analyzing each finished 9-second window in parallel."
+                        "Recording audio now. BirdNET is analyzing rolling 9-second windows every 3 seconds in parallel."
                     )
 
                 def on_chunk(chunk: np.ndarray) -> None:
-                    nonlocal submitted_frames_total
                     self._append_waveform(chunk)
                     if not species_enabled:
                         return
 
-                    for live_window in live_window_accumulator.push(chunk):
+                    for live_window, window_start_frame in live_window_accumulator.push(chunk):
                         window_started_at = started_at + timedelta(
-                            seconds=float(submitted_frames_total / max(settings.sample_rate, 1))
+                            seconds=float(window_start_frame / max(settings.sample_rate, 1))
                         )
-                        submitted_frames_total += int(live_window.shape[0])
                         submit_live_window(live_window, window_started_at)
 
                 self._birdnet_logger.info(
-                    "Preparing continuous recording mode=%s sample_rate=%s channels=%s preferred_device_index=%s preferred_device_name=%s active_schedules=%s species_enabled=%s live_window_seconds=%s",
+                    "Preparing continuous recording mode=%s sample_rate=%s channels=%s preferred_device_index=%s preferred_device_name=%s active_schedules=%s species_enabled=%s live_window_seconds=%s live_step_seconds=%s",
                     capture_mode,
                     settings.sample_rate,
                     settings.channels,
@@ -682,6 +753,7 @@ class RecordingManager:
                     active_schedule_names or ["none"],
                     species_enabled,
                     LIVE_BIRDNET_WINDOW_SECONDS,
+                    LIVE_BIRDNET_STEP_SECONDS,
                 )
                 self._set_status(
                     is_recording=True,
@@ -690,7 +762,7 @@ class RecordingManager:
                     activity_reason=capture_mode,
                     activity_message=activity_message,
                     processing_stage="recording",
-                    processing_message="Recording audio now. BirdNET will analyze each finished 9-second window while the recording keeps going.",
+                    processing_message="Recording audio now. BirdNET will analyze rolling 9-second windows every 3 seconds while the recording keeps going.",
                     segment_started_at=utc_iso(started_at),
                     last_error=None,
                     live_detection_count=0,
@@ -785,16 +857,16 @@ class RecordingManager:
                     if species_enabled:
                         remainder_window = live_window_accumulator.flush_remainder(minimum_live_frames)
                         if remainder_window is not None:
+                            remainder_samples, remainder_start_frame = remainder_window
                             window_started_at = started_at + timedelta(
-                                seconds=float(submitted_frames_total / max(settings.sample_rate, 1))
+                                seconds=float(remainder_start_frame / max(settings.sample_rate, 1))
                             )
-                            submitted_frames_total += int(remainder_window.shape[0])
                             self._birdnet_logger.info(
                                 "Submitting final partial live BirdNET window after recording stop started_at=%s sample_count=%s",
                                 window_started_at.isoformat(),
-                                int(remainder_window.shape[0]),
+                                int(remainder_samples.shape[0]),
                             )
-                            submit_live_window(remainder_window, window_started_at)
+                            submit_live_window(remainder_samples, window_started_at)
 
                     with session_lock:
                         pending_futures = list(analysis_futures)
@@ -815,7 +887,13 @@ class RecordingManager:
                             except Exception:
                                 pass
 
-                    live_detections = sorted(session_detections, key=lambda item: item.started_at)
+                    merged_live_detections = self._merge_session_detections(session_detections)
+                    self._birdnet_logger.info(
+                        "Merged live BirdNET detections raw_count=%s merged_count=%s merge_gap_seconds=%.2f",
+                        len(session_detections),
+                        len(merged_live_detections),
+                        SESSION_DETECTION_MERGE_GAP_SECONDS,
+                    )
                     if species_provider == "birdnet" and not species_enabled:
                         last_processing_summary = species_error or "BirdNET is unavailable, so no species analysis was run."
                         self._birdnet_logger.warning(
@@ -831,35 +909,35 @@ class RecordingManager:
                         last_processing_summary = f"BirdNET live analysis failed: {live_failures[-1]}"
                     elif species_enabled:
                         self._set_status(species_error=None, last_species_analysis_error=None)
-                        last_processing_summary, detected_species = self._build_recording_summary(live_detections)
+                        last_processing_summary, detected_species = self._build_recording_summary(merged_live_detections)
 
                     if live_failures and successful_window_count > 0:
                         last_processing_summary = f"{last_processing_summary} Some live windows failed: {live_failures[-1]}"
 
                     timeline_detections: list[BirdDetection] = []
-                    if live_detections:
+                    if merged_live_detections:
                         self._set_status(
                             processing_stage="extracting-clips",
-                            processing_message=f"BirdNET found {len(live_detections)} occurrence(s). Saving separate clip files now.",
+                            processing_message=f"BirdNET found {len(merged_live_detections)} occurrence(s). Saving separate clip files now.",
                         )
                         self._birdnet_logger.info(
                             "BirdNET found %s merged live detection(s) in %s. Extracting occurrence clips now.",
-                            len(live_detections),
+                            len(merged_live_detections),
                             file_path.name,
                         )
                         timeline_detections, created_clip_paths = self._create_species_detections(
                             recording_file_path=file_path,
                             recording_started_at=started_at,
-                            detections=live_detections,
+                            detections=merged_live_detections,
                         )
                     elif species_enabled and successful_window_count > 0:
                         self._birdnet_logger.info("BirdNET found no detections in %s, so no clips were created.", file_path.name)
 
                     recording_size_bytes = file_path.stat().st_size if file_path.exists() else 0
-                    discard_recording_audio = species_enabled and successful_window_count > 0 and not live_detections and not live_failures
+                    discard_recording_audio = species_enabled and successful_window_count > 0 and not merged_live_detections and not live_failures
                     if discard_recording_audio:
                         last_processing_summary = (
-                            "BirdNET checked the live 9-second windows, found no birds, and removed the saved audio file. "
+                            "BirdNET checked the rolling live windows, found no birds, and removed the saved audio file. "
                             "The timeline entry was kept so the recording time is still visible."
                         )
 
@@ -889,7 +967,7 @@ class RecordingManager:
                         session_capture.duration_seconds,
                         len(timeline_detections),
                         len(created_clip_paths),
-                        bool(live_detections),
+                        bool(merged_live_detections),
                     )
                     recording = Recording(
                         file_path=str(file_path),
@@ -901,7 +979,7 @@ class RecordingManager:
                         size_bytes=recording_size_bytes,
                         peak_amplitude=session_capture.peak_amplitude,
                         device_name=session_capture.device_name,
-                        has_bird_activity=bool(live_detections),
+                        has_bird_activity=bool(merged_live_detections),
                         bird_event_count=len(timeline_detections),
                     )
                     db.session.add(recording)
@@ -941,7 +1019,7 @@ class RecordingManager:
                         processing_message=(
                             "Recorder is waiting. The last recording stayed on the timeline, but its audio file was removed because BirdNET confirmed no birds."
                             if discard_recording_audio
-                            else "Recorder is waiting. BirdNET will analyze the next live 9-second windows when recording starts again."
+                            else "Recorder is waiting. BirdNET will analyze the next rolling live windows when recording starts again."
                         ),
                         last_processing_summary=last_processing_summary,
                         last_detection_count=len(timeline_detections),
