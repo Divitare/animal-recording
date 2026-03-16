@@ -102,7 +102,7 @@ class RecordingManager:
         runtime_details = self._runtime_details()
         self._manual_mode = False
         self._manual_stop_requested = False
-        self._waveform_samples: deque[float] = deque([0.0] * 120, maxlen=180)
+        self._waveform_samples: deque[float] = deque([0.0] * 160, maxlen=240)
         self._status: dict[str, object] = {
             "started": False,
             "is_recording": False,
@@ -145,6 +145,7 @@ class RecordingManager:
             "birdnet_last_analysis_started_at": None,
             "birdnet_last_analysis_finished_at": None,
             "birdnet_last_analysis_duration_seconds": None,
+            "birdnet_last_analysis_scope": None,
             "birdnet_last_raw_detection_count": 0,
             "birdnet_last_merged_detection_count": 0,
             "birdnet_matches_after_recording": False,
@@ -238,7 +239,7 @@ class RecordingManager:
     def _reset_waveform(self) -> None:
         with self._waveform_lock:
             self._waveform_samples.clear()
-            self._waveform_samples.extend([0.0] * 120)
+            self._waveform_samples.extend([0.0] * 160)
         self._set_status(live_level=0.0)
 
     def _append_waveform(self, chunk: np.ndarray) -> None:
@@ -247,7 +248,7 @@ class RecordingManager:
             mono = np.mean(mono, axis=1)
 
         amplitudes = np.abs(mono)
-        bucket_count = min(24, max(1, int(amplitudes.size / 256) or 1))
+        bucket_count = min(24, max(6, int(amplitudes.size / 128) or 1))
         buckets = np.array_split(amplitudes, bucket_count)
         values = [
             float(np.clip(np.mean(bucket) * 7.5, 0.0, 1.0))
@@ -409,6 +410,33 @@ class RecordingManager:
             "species": self._unique_species_names(detections),
         }
         return detections, summary
+
+    def _classify_recording_file(
+        self,
+        *,
+        file_path: Path,
+        recording_started_at: datetime,
+        latitude: float | None,
+        longitude: float | None,
+        min_confidence: float,
+    ) -> list[SessionSpeciesDetection]:
+        predictions = self._species_classifier.classify(
+            file_path,
+            latitude=latitude,
+            longitude=longitude,
+            recorded_at=recording_started_at,
+            min_confidence=min_confidence,
+        )
+        return [
+            SessionSpeciesDetection(
+                started_at=recording_started_at + timedelta(seconds=prediction.start_offset_seconds),
+                ended_at=recording_started_at + timedelta(seconds=prediction.end_offset_seconds),
+                confidence=prediction.confidence,
+                species_common_name=prediction.common_name,
+                species_scientific_name=prediction.scientific_name,
+            )
+            for prediction in predictions
+        ]
 
     def _create_species_detections(
         self,
@@ -582,6 +610,7 @@ class RecordingManager:
                             birdnet_last_analysis_started_at=analysis_details.get("started_at"),
                             birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
                             birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
+                            birdnet_last_analysis_scope=analysis_details.get("analysis_scope"),
                             birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
                             birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
                         )
@@ -614,6 +643,7 @@ class RecordingManager:
                         birdnet_last_analysis_started_at=analysis_details.get("started_at"),
                         birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
                         birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
+                        birdnet_last_analysis_scope=analysis_details.get("analysis_scope"),
                         birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
                         birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
                         birdnet_live_last_window_started_at=summary["window_started_at"],
@@ -831,6 +861,53 @@ class RecordingManager:
                         self._set_status(species_error=None, last_species_analysis_error=None)
                         last_processing_summary, detected_species = self._build_recording_summary(live_detections)
 
+                    if species_enabled and not live_detections and not live_failures and file_path.exists():
+                        self._set_status(
+                            processing_stage="analyzing",
+                            processing_message="No birds were found in the live 9-second windows. BirdNET is running one final full-recording confirmation pass.",
+                        )
+                        self._birdnet_logger.info(
+                            "Live BirdNET windows found no birds in %s. Running one final full-recording confirmation pass.",
+                            file_path.name,
+                        )
+                        try:
+                            live_detections = self._classify_recording_file(
+                                file_path=file_path,
+                                recording_started_at=started_at,
+                                latitude=settings.latitude,
+                                longitude=settings.longitude,
+                                min_confidence=settings.species_min_confidence,
+                            )
+                            analysis_details = self._analysis_details()
+                            self._set_status(
+                                species_error=None,
+                                last_species_analysis_error=None,
+                                birdnet_last_analysis_target=analysis_details.get("file_path"),
+                                birdnet_last_analysis_started_at=analysis_details.get("started_at"),
+                                birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
+                                birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
+                                birdnet_last_analysis_scope=analysis_details.get("analysis_scope"),
+                                birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
+                                birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
+                            )
+                            latest_live_window_detections = self._top_live_window_species(live_detections)
+                            last_processing_summary, detected_species = self._build_recording_summary(live_detections)
+                        except Exception as exc:
+                            analysis_details = self._analysis_details()
+                            live_failures.append(str(exc))
+                            self._set_status(
+                                species_error=f"Final BirdNET confirmation pass failed: {exc}",
+                                last_species_analysis_error=f"Final BirdNET confirmation pass failed: {exc}",
+                                birdnet_last_analysis_target=analysis_details.get("file_path"),
+                                birdnet_last_analysis_started_at=analysis_details.get("started_at"),
+                                birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
+                                birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
+                                birdnet_last_analysis_scope=analysis_details.get("analysis_scope"),
+                                birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
+                                birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
+                            )
+                            last_processing_summary = f"BirdNET final confirmation pass failed: {exc}"
+
                     if live_failures and successful_window_count > 0:
                         last_processing_summary = f"{last_processing_summary} Some live windows failed: {live_failures[-1]}"
 
@@ -853,61 +930,29 @@ class RecordingManager:
                     elif species_enabled and successful_window_count > 0:
                         self._birdnet_logger.info("BirdNET found no detections in %s, so no clips were created.", file_path.name)
 
-                    discard_recording = species_enabled and successful_window_count > 0 and not live_detections and not live_failures
-                    if discard_recording:
+                    recording_size_bytes = file_path.stat().st_size if file_path.exists() else 0
+                    discard_recording_audio = species_enabled and successful_window_count > 0 and not live_detections and not live_failures
+                    if discard_recording_audio:
+                        last_processing_summary = (
+                            "BirdNET checked the live windows and the final confirmation pass, found no birds, and removed the saved audio file. "
+                            "The timeline entry was kept so the recording time is still visible."
+                        )
+
+                    if discard_recording_audio:
                         try:
                             file_path.unlink(missing_ok=True)
                         except OSError as exc:
                             self._birdnet_logger.warning(
-                                "BirdNET found no birds in %s, but deleting the unneeded recording failed: %s",
+                                "BirdNET found no birds in %s, but deleting the unneeded audio file failed: %s",
                                 file_path.name,
                                 exc,
                             )
                         else:
                             self._birdnet_logger.info(
-                                "BirdNET found no birds in %s after %s successful live window(s). Discarded the unneeded recording file.",
+                                "BirdNET found no birds in %s after %s successful live window(s). Removed the unneeded audio file but will keep the timeline entry.",
                                 file_path.name,
                                 successful_window_count,
                             )
-
-                        self._clear_manual_stop()
-                        manual_still_requested = self._manual_requested()
-                        next_reason = "manual-armed" if manual_still_requested else ("schedule" if active_schedule_names else "idle")
-                        discard_summary = (
-                            "BirdNET checked the finished 9-second windows and found no birds, so the recording was discarded."
-                        )
-                        self._set_status(
-                            is_recording=False,
-                            manual_mode=manual_still_requested,
-                            current_device_name=session_capture.device_name,
-                            last_recording_at=utc_iso(ended_at),
-                            activity_reason=next_reason,
-                            activity_message=(
-                                "Manual recording will continue until you press Stop."
-                                if manual_still_requested
-                                else (
-                                    "Scheduled window is still active. Recording continues in the next session shortly."
-                                    if active_schedule_names
-                                    else "Waiting for the next schedule or manual start."
-                                )
-                            ),
-                            processing_stage="idle",
-                            processing_message="Recorder is waiting. The last 9-second BirdNET window found no birds, so nothing was saved.",
-                            last_processing_summary=discard_summary,
-                            last_detection_count=0,
-                            last_clip_count=0,
-                            last_detected_species=[],
-                            live_detection_count=len(latest_live_window_detections),
-                            live_detected_species=self._unique_species_names(latest_live_window_detections),
-                            live_detections=self._live_detection_preview(latest_live_window_detections),
-                            birdnet_live_analysis_active=False,
-                            birdnet_live_pending_windows=0,
-                            birdnet_live_completed_windows=completed_window_count,
-                            birdnet_last_merged_detection_count=0,
-                            segment_started_at=None,
-                            last_error=None,
-                        )
-                        continue
 
                     self._set_status(
                         processing_stage="saving-results",
@@ -928,7 +973,7 @@ class RecordingManager:
                         duration_seconds=session_capture.duration_seconds,
                         sample_rate=session_capture.sample_rate,
                         channels=session_capture.channels,
-                        size_bytes=file_path.stat().st_size,
+                        size_bytes=recording_size_bytes,
                         peak_amplitude=session_capture.peak_amplitude,
                         device_name=session_capture.device_name,
                         has_bird_activity=bool(live_detections),
@@ -968,7 +1013,11 @@ class RecordingManager:
                             )
                         ),
                         processing_stage="idle",
-                        processing_message="Recorder is waiting. BirdNET will analyze the next live 9-second windows when recording starts again.",
+                        processing_message=(
+                            "Recorder is waiting. The last recording stayed on the timeline, but its audio file was removed because BirdNET confirmed no birds."
+                            if discard_recording_audio
+                            else "Recorder is waiting. BirdNET will analyze the next live 9-second windows when recording starts again."
+                        ),
                         last_processing_summary=last_processing_summary,
                         last_detection_count=len(timeline_detections),
                         last_clip_count=len(created_clip_paths),

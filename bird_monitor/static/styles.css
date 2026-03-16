@@ -788,6 +788,11 @@ button:hover {
   background: linear-gradient(90deg, #2f8c7a, #5aa545);
 }
 
+.recording-segment.is-metadata-only {
+  background: linear-gradient(90deg, rgba(39, 90, 114, 0.45), rgba(47, 140, 122, 0.45));
+  border: 1px dashed rgba(47, 36, 23, 0.2);
+}
+
 .recording-segment-label {
   position: absolute;
   top: -24px;

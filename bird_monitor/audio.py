@@ -214,7 +214,7 @@ def record_continuous_session(
     on_chunk: ChunkCallback | None = None,
     should_stop: StopCallback | None = None,
     max_duration_seconds: float | None = None,
-    chunk_seconds: float = 0.12,
+    chunk_seconds: float = 0.05,
 ) -> AudioSessionCapture:
     ensure_audio_runtime()
     device_index, device_name = resolve_input_device(preferred_name, preferred_index)

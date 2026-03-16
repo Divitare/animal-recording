@@ -39,18 +39,25 @@ def parse_client_datetime(value: str | None) -> datetime | None:
 
 def serialize_detection(detection: BirdDetection) -> dict[str, object]:
     payload = detection.to_dict()
+    recording_audio_available = Path(detection.recording.file_path).exists() if detection.recording else False
     payload["clip_url"] = (
         url_for("api.download_detection_clip", detection_id=detection.id)
         if detection.clip_file_path
         else None
     )
-    payload["recording_audio_url"] = url_for("api.download_recording_audio", recording_id=detection.recording_id)
+    payload["recording_audio_url"] = (
+        url_for("api.download_recording_audio", recording_id=detection.recording_id)
+        if recording_audio_available
+        else None
+    )
     return payload
 
 
 def serialize_recording(recording: Recording) -> dict[str, object]:
     payload = recording.to_dict()
-    payload["audio_url"] = url_for("api.download_recording_audio", recording_id=recording.id)
+    audio_available = Path(recording.file_path).exists()
+    payload["audio_available"] = audio_available
+    payload["audio_url"] = url_for("api.download_recording_audio", recording_id=recording.id) if audio_available else None
     payload["detections"] = [
         serialize_detection(detection)
         for detection in recording.detections
@@ -110,6 +117,7 @@ def _service_snapshot(include_devices: bool) -> dict[str, object]:
         "birdnet_last_analysis_started_at": None,
         "birdnet_last_analysis_finished_at": None,
         "birdnet_last_analysis_duration_seconds": None,
+        "birdnet_last_analysis_scope": None,
         "birdnet_last_raw_detection_count": 0,
         "birdnet_last_merged_detection_count": 0,
         "birdnet_matches_after_recording": False,
