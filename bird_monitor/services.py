@@ -25,7 +25,7 @@ from .species import build_species_classifier
 
 LIVE_BIRDNET_WINDOW_SECONDS = 9
 MINIMUM_LIVE_ANALYSIS_SECONDS = 3
-LIVE_DETECTION_PREVIEW_LIMIT = 10
+LIVE_DETECTION_PREVIEW_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,8 @@ class RecordingManager:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="bird-monitor-recorder", daemon=True)
         self._status_lock = threading.Lock()
+        self._live_status_condition = threading.Condition()
+        self._live_status_revision = 0
         self._manual_lock = threading.Lock()
         self._waveform_lock = threading.Lock()
         self._birdnet_logger = get_birdnet_logger()
@@ -207,6 +209,19 @@ class RecordingManager:
     def _set_status(self, **values: object) -> None:
         with self._status_lock:
             self._status.update(values)
+        with self._live_status_condition:
+            self._live_status_revision += 1
+            self._live_status_condition.notify_all()
+
+    def current_status_revision(self) -> int:
+        with self._live_status_condition:
+            return self._live_status_revision
+
+    def wait_for_status_revision(self, previous_revision: int, timeout: float = 1.0) -> int:
+        with self._live_status_condition:
+            if self._live_status_revision <= previous_revision:
+                self._live_status_condition.wait(timeout=timeout)
+            return self._live_status_revision
 
     def _manual_requested(self) -> bool:
         with self._manual_lock:
@@ -305,8 +320,32 @@ class RecordingManager:
                 ordered_names.append(detection.species_common_name)
         return ordered_names
 
+    def _top_live_window_species(self, detections: list[SessionSpeciesDetection]) -> list[SessionSpeciesDetection]:
+        best_by_species: dict[tuple[str, str | None], SessionSpeciesDetection] = {}
+
+        for detection in detections:
+            key = (detection.species_common_name, detection.species_scientific_name)
+            existing = best_by_species.get(key)
+            if existing is None:
+                best_by_species[key] = detection
+                continue
+
+            best_by_species[key] = SessionSpeciesDetection(
+                started_at=min(existing.started_at, detection.started_at),
+                ended_at=max(existing.ended_at, detection.ended_at),
+                confidence=max(existing.confidence, detection.confidence),
+                species_common_name=detection.species_common_name,
+                species_scientific_name=detection.species_scientific_name or existing.species_scientific_name,
+            )
+
+        return sorted(
+            best_by_species.values(),
+            key=lambda item: (item.confidence, item.started_at),
+            reverse=True,
+        )[:LIVE_DETECTION_PREVIEW_LIMIT]
+
     def _live_detection_preview(self, detections: list[SessionSpeciesDetection]) -> list[dict[str, object]]:
-        ordered = sorted(detections, key=lambda item: item.started_at, reverse=True)
+        ordered = self._top_live_window_species(detections)
         return [
             {
                 "started_at": utc_iso(item.started_at),
@@ -487,6 +526,7 @@ class RecordingManager:
                 live_window_accumulator = AnalysisWindowAccumulator(live_window_frames)
                 session_lock = threading.Lock()
                 session_detections: list[SessionSpeciesDetection] = []
+                latest_live_window_detections: list[SessionSpeciesDetection] = []
                 analysis_futures: set[Future] = set()
                 pending_window_count = 0
                 completed_window_count = 0
@@ -504,7 +544,7 @@ class RecordingManager:
 
                 def refresh_live_status(message: str | None = None) -> None:
                     with session_lock:
-                        detections_snapshot = list(session_detections)
+                        detections_snapshot = list(latest_live_window_detections)
                         pending_count = pending_window_count
                         completed_count = completed_window_count
                     preview = self._live_detection_preview(detections_snapshot)
@@ -524,7 +564,7 @@ class RecordingManager:
                     )
 
                 def handle_live_window_completion(future: Future) -> None:
-                    nonlocal pending_window_count, completed_window_count, successful_window_count
+                    nonlocal pending_window_count, completed_window_count, successful_window_count, latest_live_window_detections
                     with session_lock:
                         analysis_futures.discard(future)
                     try:
@@ -557,6 +597,7 @@ class RecordingManager:
                         successful_window_count += 1
                         session_detections.extend(detections)
                         session_detections.sort(key=lambda item: item.started_at)
+                        latest_live_window_detections = self._top_live_window_species(detections)
 
                     self._birdnet_logger.info(
                         "Live BirdNET window completed index=%s started_at=%s ended_at=%s detections=%s species=%s",
@@ -812,6 +853,62 @@ class RecordingManager:
                     elif species_enabled and successful_window_count > 0:
                         self._birdnet_logger.info("BirdNET found no detections in %s, so no clips were created.", file_path.name)
 
+                    discard_recording = species_enabled and successful_window_count > 0 and not live_detections and not live_failures
+                    if discard_recording:
+                        try:
+                            file_path.unlink(missing_ok=True)
+                        except OSError as exc:
+                            self._birdnet_logger.warning(
+                                "BirdNET found no birds in %s, but deleting the unneeded recording failed: %s",
+                                file_path.name,
+                                exc,
+                            )
+                        else:
+                            self._birdnet_logger.info(
+                                "BirdNET found no birds in %s after %s successful live window(s). Discarded the unneeded recording file.",
+                                file_path.name,
+                                successful_window_count,
+                            )
+
+                        self._clear_manual_stop()
+                        manual_still_requested = self._manual_requested()
+                        next_reason = "manual-armed" if manual_still_requested else ("schedule" if active_schedule_names else "idle")
+                        discard_summary = (
+                            "BirdNET checked the finished 9-second windows and found no birds, so the recording was discarded."
+                        )
+                        self._set_status(
+                            is_recording=False,
+                            manual_mode=manual_still_requested,
+                            current_device_name=session_capture.device_name,
+                            last_recording_at=utc_iso(ended_at),
+                            activity_reason=next_reason,
+                            activity_message=(
+                                "Manual recording will continue until you press Stop."
+                                if manual_still_requested
+                                else (
+                                    "Scheduled window is still active. Recording continues in the next session shortly."
+                                    if active_schedule_names
+                                    else "Waiting for the next schedule or manual start."
+                                )
+                            ),
+                            processing_stage="idle",
+                            processing_message="Recorder is waiting. The last 9-second BirdNET window found no birds, so nothing was saved.",
+                            last_processing_summary=discard_summary,
+                            last_detection_count=0,
+                            last_clip_count=0,
+                            last_detected_species=[],
+                            live_detection_count=len(latest_live_window_detections),
+                            live_detected_species=self._unique_species_names(latest_live_window_detections),
+                            live_detections=self._live_detection_preview(latest_live_window_detections),
+                            birdnet_live_analysis_active=False,
+                            birdnet_live_pending_windows=0,
+                            birdnet_live_completed_windows=completed_window_count,
+                            birdnet_last_merged_detection_count=0,
+                            segment_started_at=None,
+                            last_error=None,
+                        )
+                        continue
+
                     self._set_status(
                         processing_stage="saving-results",
                         processing_message="Saving recording metadata, BirdNET detections, and clip references to the timeline.",
@@ -876,9 +973,9 @@ class RecordingManager:
                         last_detection_count=len(timeline_detections),
                         last_clip_count=len(created_clip_paths),
                         last_detected_species=detected_species,
-                        live_detection_count=len(live_detections),
-                        live_detected_species=self._unique_species_names(live_detections),
-                        live_detections=self._live_detection_preview(live_detections),
+                        live_detection_count=len(latest_live_window_detections),
+                        live_detected_species=self._unique_species_names(latest_live_window_detections),
+                        live_detections=self._live_detection_preview(latest_live_window_detections),
                         birdnet_live_analysis_active=False,
                         birdnet_live_pending_windows=0,
                         birdnet_live_completed_windows=completed_window_count,

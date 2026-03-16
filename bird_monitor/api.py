@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import csv
+import json
 import tempfile
 import zipfile
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 
-from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, url_for
+from flask import Blueprint, Response, after_this_request, current_app, jsonify, request, send_file, stream_with_context, url_for
 
 from .analytics import (
     SPECIES_EVENT_MERGE_GAP_SECONDS,
@@ -158,6 +159,44 @@ def live_status():
             "service": _service_snapshot(include_devices=False),
         }
     )
+
+
+@api_bp.get("/live-stream")
+def live_stream():
+    manager = get_background_manager()
+
+    @stream_with_context
+    def generate():
+        if manager is None:
+            payload = {
+                "app": {
+                    "commit": current_app.config.get("APP_COMMIT", "unknown"),
+                },
+                "service": _service_snapshot(include_devices=False),
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            return
+
+        last_revision = -1
+        while True:
+            next_revision = manager.wait_for_status_revision(last_revision, timeout=1.0)
+            if next_revision == last_revision:
+                yield ": keep-alive\n\n"
+                continue
+
+            last_revision = next_revision
+            payload = {
+                "app": {
+                    "commit": current_app.config.get("APP_COMMIT", "unknown"),
+                },
+                "service": manager.get_status(include_devices=False),
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+
+    response = Response(generate(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 @api_bp.get("/birdnet/logs")

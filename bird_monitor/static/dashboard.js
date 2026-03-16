@@ -17,6 +17,7 @@ const dashboardState = {
   birdnetLogStatusTone: "info",
   livePollHandle: null,
   livePollInFlight: false,
+  liveEventSource: null,
   autoFollowRange: true,
   recordingsDataSignature: "",
   zoomFactor: 1,
@@ -396,6 +397,33 @@ async function dashboardLoadLiveStatus() {
   dashboardRenderService(payload.service);
 }
 
+function dashboardStartLiveStream() {
+  if (!("EventSource" in window)) {
+    return;
+  }
+
+  if (dashboardState.liveEventSource) {
+    dashboardState.liveEventSource.close();
+  }
+
+  const liveSource = new EventSource("/api/live-stream");
+  liveSource.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      dashboardState.status = payload.service;
+      dashboardRenderService(payload.service);
+    } catch (error) {
+      dashboardShowError(error);
+    }
+  };
+  liveSource.onerror = () => {
+    if (liveSource.readyState === EventSource.CLOSED && dashboardState.liveEventSource === liveSource) {
+      dashboardState.liveEventSource = null;
+    }
+  };
+  dashboardState.liveEventSource = liveSource;
+}
+
 async function dashboardLoadBirdnetLogs() {
   const payload = await dashboardFetchJson("/api/birdnet/logs?limit=80");
   dashboardState.birdnetLogs = payload.items || [];
@@ -418,10 +446,10 @@ function dashboardStartLivePolling() {
       }
 
       const shouldRefreshRecordings = dashboardState.autoFollowRange || dashboardRangeCanReceiveUpdates();
-      const tasks = [
-        dashboardLoadStatus(),
-        dashboardLoadBirdnetLogs(),
-      ];
+      const tasks = [dashboardLoadBirdnetLogs()];
+      if (!dashboardState.liveEventSource) {
+        tasks.unshift(dashboardLoadLiveStatus());
+      }
       if (shouldRefreshRecordings) {
         tasks.push(dashboardLoadRecordings(false));
       }
@@ -544,11 +572,11 @@ function dashboardRenderLiveDetections(service) {
   const completedWindows = Number(service.birdnet_live_completed_windows || 0);
 
   if (service.is_recording) {
-    dashboardElements.liveDetectionsSummary.textContent = `BirdNET checks each finished ${liveWindowSeconds}-second window while the recording continues. ${completedWindows} window(s) completed, ${pendingWindows} pending.`;
+    dashboardElements.liveDetectionsSummary.textContent = `Top bird candidates from the most recently analyzed ${liveWindowSeconds}-second window. At most 5 species are shown. ${completedWindows} window(s) completed, ${pendingWindows} pending.`;
   } else if (items.length) {
-    dashboardElements.liveDetectionsSummary.textContent = "Latest live BirdNET detections from the most recent recording.";
+    dashboardElements.liveDetectionsSummary.textContent = "Top bird candidates from the last analyzed 9-second window of the most recent recording.";
   } else {
-    dashboardElements.liveDetectionsSummary.textContent = "BirdNET checks each finished 9-second window while the recording continues.";
+    dashboardElements.liveDetectionsSummary.textContent = "BirdNET checks each finished 9-second window and shows only the strongest live species candidates.";
   }
 
   dashboardElements.liveDetectionsList.innerHTML = "";
@@ -556,8 +584,8 @@ function dashboardRenderLiveDetections(service) {
     const empty = document.createElement("div");
     empty.className = "empty-state live-detections-empty";
     empty.textContent = service.is_recording
-      ? "No live BirdNET detections yet for this recording."
-      : "No live BirdNET detections yet.";
+      ? "No birds were found in the most recently analyzed 9-second window."
+      : "No birds were found in the last analyzed 9-second window.";
     dashboardElements.liveDetectionsList.append(empty);
     return;
   }
@@ -1488,6 +1516,7 @@ async function initDashboard() {
       dashboardLoadRecordings(true),
       dashboardLoadBirdnetLogs(),
     ]);
+    dashboardStartLiveStream();
     dashboardStartLivePolling();
   } catch (error) {
     dashboardShowError(error);
