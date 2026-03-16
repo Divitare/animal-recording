@@ -139,6 +139,20 @@ def _remove_file_if_present(path_value: str | None) -> bool:
     return True
 
 
+def _species_detection_query():
+    return BirdDetection.query.filter(BirdDetection.species_common_name.is_not(None))
+
+
+def _refresh_recording_detection_summary(recording_id: int) -> None:
+    recording = Recording.query.get(recording_id)
+    if recording is None:
+        return
+
+    detection_count = _species_detection_query().filter(BirdDetection.recording_id == recording_id).count()
+    recording.bird_event_count = detection_count
+    recording.has_bird_activity = detection_count > 0
+
+
 def _collect_log_files() -> list[Path]:
     candidates: list[Path] = []
     seen: set[Path] = set()
@@ -612,6 +626,102 @@ def delete_recording(recording_id: int):
         deleted_files,
     )
     return jsonify({"ok": True, "deleted_file_count": deleted_files, "recording_id": recording_id})
+
+
+@api_bp.delete("/detections/<int:detection_id>")
+def delete_detection(detection_id: int):
+    detection = BirdDetection.query.get_or_404(detection_id)
+    payload = serialize_detection(detection)
+    clip_file_path = detection.clip_file_path
+    recording_id = detection.recording_id
+
+    db.session.delete(detection)
+    db.session.flush()
+    _refresh_recording_detection_summary(recording_id)
+    db.session.commit()
+
+    deleted_files = 1 if _remove_file_if_present(clip_file_path) else 0
+    _audit_logger().info(
+        "Bird clip deleted by %s detection=%s deleted_file_count=%s",
+        _request_actor(),
+        payload,
+        deleted_files,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "detection_id": detection_id,
+            "recording_id": recording_id,
+            "deleted_file_count": deleted_files,
+        }
+    )
+
+
+@api_bp.post("/detections/delete-range")
+def delete_detections_in_range():
+    payload = request.get_json(silent=True) or {}
+    try:
+        start_at = parse_client_datetime(payload.get("start"))
+        end_at = parse_client_datetime(payload.get("end"))
+    except ValueError as exc:
+        return _json_error(str(exc))
+
+    if start_at is None or end_at is None:
+        return _json_error("Both start and end are required.")
+    if end_at <= start_at:
+        return _json_error("The end time must be after the start time.")
+
+    detections = (
+        _species_detection_query()
+        .filter(BirdDetection.started_at < end_at, BirdDetection.ended_at > start_at)
+        .order_by(BirdDetection.started_at.asc())
+        .all()
+    )
+    if not detections:
+        return jsonify(
+            {
+                "ok": True,
+                "deleted_detection_count": 0,
+                "deleted_file_count": 0,
+                "affected_recording_count": 0,
+            }
+        )
+
+    recording_ids = {detection.recording_id for detection in detections}
+    clip_paths = [detection.clip_file_path for detection in detections if detection.clip_file_path]
+    detection_ids = [detection.id for detection in detections]
+
+    for detection in detections:
+        db.session.delete(detection)
+    db.session.flush()
+
+    for recording_id in recording_ids:
+        _refresh_recording_detection_summary(recording_id)
+    db.session.commit()
+
+    deleted_files = 0
+    for clip_path in clip_paths:
+        if _remove_file_if_present(clip_path):
+            deleted_files += 1
+
+    _audit_logger().info(
+        "Bird clip range deleted by %s start=%s end=%s deleted_detection_count=%s affected_recording_count=%s deleted_file_count=%s detection_ids=%s",
+        _request_actor(),
+        start_at.replace(tzinfo=timezone.utc).isoformat(),
+        end_at.replace(tzinfo=timezone.utc).isoformat(),
+        len(detection_ids),
+        len(recording_ids),
+        deleted_files,
+        detection_ids,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "deleted_detection_count": len(detection_ids),
+            "deleted_file_count": deleted_files,
+            "affected_recording_count": len(recording_ids),
+        }
+    )
 
 
 @api_bp.get("/detections/<int:detection_id>/clip")

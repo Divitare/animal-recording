@@ -47,6 +47,7 @@ const dashboardElements = {
   speciesStatsList: document.querySelector("#species-stats-list"),
   recordingsSummary: document.querySelector("#recordings-summary"),
   recordingsList: document.querySelector("#recordings-list"),
+  recordingsDeleteAllButton: document.querySelector("#recordings-delete-all-button"),
   serviceState: document.querySelector("#service-state"),
   serviceSummary: document.querySelector("#service-summary"),
   activityMessage: document.querySelector("#activity-message"),
@@ -157,10 +158,6 @@ function dashboardCurrentPageScrollTop() {
   return window.scrollY || document.documentElement.scrollTop || 0;
 }
 
-function dashboardRestorePageScrollTop(scrollTop) {
-  window.scrollTo(window.scrollX || 0, Math.max(Number(scrollTop) || 0, 0));
-}
-
 function dashboardCaptureOpenDetailKeys(container, attributeName) {
   if (!container) {
     return new Set();
@@ -218,6 +215,13 @@ function dashboardBuildRecordingsDataSignature(payload) {
   return JSON.stringify({ recordings, speciesEvents, speciesStats });
 }
 
+function dashboardCurrentRangePayload() {
+  return {
+    start: new Date(dashboardElements.rangeStart.value).toISOString(),
+    end: new Date(dashboardElements.rangeEnd.value).toISOString(),
+  };
+}
+
 function dashboardBindEvents() {
   window.addEventListener("beforeunload", () => {
     if (dashboardState.liveEventSource) {
@@ -257,10 +261,7 @@ function dashboardBindEvents() {
 
   dashboardElements.downloadButton.addEventListener("click", async () => {
     try {
-      const params = new URLSearchParams({
-        start: new Date(dashboardElements.rangeStart.value).toISOString(),
-        end: new Date(dashboardElements.rangeEnd.value).toISOString(),
-      });
+      const params = new URLSearchParams(dashboardCurrentRangePayload());
       const response = await fetch(`/api/export?${params.toString()}`);
       if (!response.ok) {
         const payload = await response.json();
@@ -349,6 +350,14 @@ function dashboardBindEvents() {
     } finally {
       dashboardElements.clearLogsButton.disabled = false;
       dashboardElements.clearLogsButton.textContent = originalLabel;
+    }
+  });
+
+  dashboardElements.recordingsDeleteAllButton.addEventListener("click", async () => {
+    try {
+      await dashboardDeleteAllDetections(dashboardElements.recordingsDeleteAllButton);
+    } catch (error) {
+      dashboardShowError(error);
     }
   });
 
@@ -524,13 +533,9 @@ function dashboardStartLivePolling() {
 
 async function dashboardLoadRecordings(resetZoom) {
   const previousScrollRatio = dashboardCurrentScrollRatio();
-  const previousPageScrollTop = dashboardCurrentPageScrollTop();
   const openLibraryIds = dashboardCaptureOpenDetailKeys(dashboardElements.recordingsList, "data-library-id");
   const openSpeciesKeys = dashboardCaptureOpenDetailKeys(dashboardElements.speciesStatsList, "data-species-key");
-  const params = new URLSearchParams({
-    start: new Date(dashboardElements.rangeStart.value).toISOString(),
-    end: new Date(dashboardElements.rangeEnd.value).toISOString(),
-  });
+  const params = new URLSearchParams(dashboardCurrentRangePayload());
   const payload = await dashboardFetchJson(`/api/recordings?${params.toString()}`);
   const nextSignature = dashboardBuildRecordingsDataSignature(payload);
   const shouldRenderLists = resetZoom || nextSignature !== dashboardState.recordingsDataSignature;
@@ -551,12 +556,6 @@ async function dashboardLoadRecordings(resetZoom) {
     dashboardRenderStatistics(openSpeciesKeys);
     dashboardRenderRecordingsList(openLibraryIds);
     dashboardState.recordingsDataSignature = nextSignature;
-    window.requestAnimationFrame(() => {
-      const currentPageScrollTop = dashboardCurrentPageScrollTop();
-      if (Math.abs(currentPageScrollTop - previousPageScrollTop) <= 48) {
-        dashboardRestorePageScrollTop(previousPageScrollTop);
-      }
-    });
   }
 }
 
@@ -1266,6 +1265,7 @@ function dashboardRenderStatistics(openSpeciesKeys = new Set()) {
 
 function dashboardRenderRecordingsList(openLibraryIds = new Set()) {
   dashboardElements.recordingsList.innerHTML = "";
+  dashboardElements.recordingsDeleteAllButton.disabled = true;
 
   if (!dashboardState.range) {
     dashboardElements.recordingsSummary.textContent = "No bird clips loaded yet.";
@@ -1277,6 +1277,7 @@ function dashboardRenderRecordingsList(openLibraryIds = new Set()) {
     (left, right) => new Date(right.started_at) - new Date(left.started_at),
   );
   dashboardElements.recordingsSummary.textContent = `${detections.length} BirdNET clip(s) from ${dashboardState.recordings.length} recording(s) in the selected range.`;
+  dashboardElements.recordingsDeleteAllButton.disabled = detections.length === 0;
 
   if (!detections.length) {
     dashboardElements.recordingsList.innerHTML = `<div class="empty-state">No BirdNET-confirmed bird clips were found in this time span.</div>`;
@@ -1335,12 +1336,12 @@ function dashboardBuildDetectionLibraryAccordion(detection, openLibraryIds = new
   actionRow.innerHTML = `
     ${clipAction}
     ${sourceAction}
-    <button type="button" class="danger-button clip-delete-button">Delete recording</button>
+    <button type="button" class="danger-button clip-delete-button">Delete this clip</button>
   `;
   const deleteButton = actionRow.querySelector(".clip-delete-button");
   deleteButton.addEventListener("click", async () => {
     try {
-      await dashboardDeleteRecording(detection.recording_id, deleteButton);
+      await dashboardDeleteDetection(detection.id, deleteButton);
     } catch (error) {
       dashboardShowError(error);
     }
@@ -1402,6 +1403,58 @@ async function dashboardDeleteRecording(recordingId, button) {
   button.textContent = "Deleting...";
   try {
     await dashboardFetchJson(`/api/recordings/${recordingId}`, { method: "DELETE" });
+    await Promise.all([
+      dashboardLoadStatus(),
+      dashboardLoadRecordings(false),
+    ]);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
+async function dashboardDeleteDetection(detectionId, button) {
+  const confirmed = window.confirm("Delete only this BirdNET clip entry and keep the timeline recording?");
+  if (!confirmed) {
+    return;
+  }
+
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Deleting...";
+  try {
+    await dashboardFetchJson(`/api/detections/${detectionId}`, { method: "DELETE" });
+    await Promise.all([
+      dashboardLoadStatus(),
+      dashboardLoadRecordings(false),
+    ]);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
+async function dashboardDeleteAllDetections(button) {
+  if (!dashboardState.detections.length) {
+    return;
+  }
+
+  const confirmed = window.confirm("Delete all BirdNET clip entries that are currently visible in this time range?");
+  if (!confirmed) {
+    return;
+  }
+
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Deleting...";
+  try {
+    await dashboardFetchJson("/api/detections/delete-range", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(dashboardCurrentRangePayload()),
+    });
     await Promise.all([
       dashboardLoadStatus(),
       dashboardLoadRecordings(false),

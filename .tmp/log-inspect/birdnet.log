@@ -1,0 +1,45 @@
+2026-03-16 12:33:46,609 INFO [bird_monitor.birdnet] Manual recording start requested by 192.168.178.39
+2026-03-16 12:33:46,609 INFO [bird_monitor.birdnet] Manual recording start requested.
+2026-03-16 12:33:46,826 INFO [bird_monitor.birdnet] Preparing continuous recording mode=manual sample_rate=16000 channels=1 preferred_device_index=5 preferred_device_name=auto active_schedules=['none'] species_enabled=True live_window_seconds=9
+2026-03-16 12:33:55,945 INFO [bird_monitor.birdnet] Submitting live BirdNET window index=1 mode=manual started_at=2026-03-16T12:33:46.826419 ended_at=2026-03-16T12:33:55.826419 duration=9.00s sample_rate=16000 min_confidence=0.35
+2026-03-16 12:33:55,946 INFO [bird_monitor.birdnet] BirdNET classify request source=live-window-001 sample_rate=16000 kwargs={'min_conf': 0.35, 'return_all_detections': True, 'lat': 47.7765, 'lon': 12.3234, 'date': '2026-03-16T12:33:46.826419'} sample_summary={'sample_rate': 16000, 'sample_count': 144000, 'duration_seconds': 9.0, 'peak': 0.055328, 'rms': 0.00553, 'dtype': 'float32'}
+2026-03-16 12:33:55,946 INFO [bird_monitor.birdnet] BirdNET analysis started for live-window-001 size_bytes=buffer min_confidence=0.35 latitude=47.7765 longitude=12.3234 recorded_at=2026-03-16T12:33:46.826419
+2026-03-16 12:33:55,946 INFO [bird_monitor.birdnet] BirdNET buffer analysis preparing sample_rate=16000 kwargs={'min_conf': 0.35, 'return_all_detections': True, 'lat': 47.7765, 'lon': 12.3234, 'date': '2026-03-16T12:33:46.826419'} sample_summary={'sample_rate': 16000, 'sample_count': 144000, 'duration_seconds': 9.0, 'peak': 0.055328, 'rms': 0.00553, 'dtype': 'float32'}
+2026-03-16 12:33:55,946 INFO [bird_monitor.birdnet] BirdNET buffer analysis attempt=rate keyword
+2026-03-16 12:33:55,997 INFO [bird_monitor.birdnet] BirdNET buffer analysis succeeded attempt=rate keyword raw_detection_count=0
+2026-03-16 12:33:55,997 INFO [bird_monitor.birdnet] BirdNET path strategy succeeded strategy=in-memory-buffer source=live-window-001
+2026-03-16 12:33:55,997 INFO [bird_monitor.birdnet] BirdNET raw detections received count=0
+2026-03-16 12:33:55,997 INFO [bird_monitor.birdnet] BirdNET analysis finished for live-window-001 in 0.05s raw_detections=0 merged_detections=0 species=none
+2026-03-16 12:33:55,997 INFO [bird_monitor.birdnet] BirdNET found no bird species in live-window-001.
+2026-03-16 12:33:55,997 INFO [bird_monitor.birdnet] Live BirdNET window completed index=1 started_at=2026-03-16T12:33:46.826419+00:00 ended_at=2026-03-16T12:33:55.826419+00:00 detections=0 species=none
+2026-03-16 12:34:04,945 INFO [bird_monitor.birdnet] Submitting live BirdNET window index=2 mode=manual started_at=2026-03-16T12:33:55.826419 ended_at=2026-03-16T12:34:04.826419 duration=9.00s sample_rate=16000 min_confidence=0.35
+2026-03-16 12:34:04,945 INFO [bird_monitor.birdnet] BirdNET classify request source=live-window-002 sample_rate=16000 kwargs={'min_conf': 0.35, 'return_all_detections': True, 'lat': 47.7765, 'lon': 12.3234, 'date': '2026-03-16T12:33:55.826419'} sample_summary={'sample_rate': 16000, 'sample_count': 144000, 'duration_seconds': 9.0, 'peak': 0.088989, 'rms': 0.005735, 'dtype': 'float32'}
+2026-03-16 12:34:04,945 INFO [bird_monitor.birdnet] BirdNET analysis started for live-window-002 size_bytes=buffer min_confidence=0.35 latitude=47.7765 longitude=12.3234 recorded_at=2026-03-16T12:33:55.826419
+2026-03-16 12:34:04,946 INFO [bird_monitor.birdnet] BirdNET buffer analysis preparing sample_rate=16000 kwargs={'min_conf': 0.35, 'return_all_detections': True, 'lat': 47.7765, 'lon': 12.3234, 'date': '2026-03-16T12:33:55.826419'} sample_summary={'sample_rate': 16000, 'sample_count': 144000, 'duration_seconds': 9.0, 'peak': 0.088989, 'rms': 0.005735, 'dtype': 'float32'}
+2026-03-16 12:34:04,946 INFO [bird_monitor.birdnet] BirdNET buffer analysis attempt=rate keyword
+2026-03-16 12:34:04,998 INFO [bird_monitor.birdnet] BirdNET buffer analysis succeeded attempt=rate keyword raw_detection_count=0
+2026-03-16 12:34:04,998 INFO [bird_monitor.birdnet] BirdNET path strategy succeeded strategy=in-memory-buffer source=live-window-002
+2026-03-16 12:34:04,999 INFO [bird_monitor.birdnet] BirdNET raw detections received count=0
+2026-03-16 12:34:04,999 INFO [bird_monitor.birdnet] BirdNET analysis finished for live-window-002 in 0.05s raw_detections=0 merged_detections=0 species=none
+2026-03-16 12:34:04,999 INFO [bird_monitor.birdnet] BirdNET found no bird species in live-window-002.
+2026-03-16 12:34:04,999 INFO [bird_monitor.birdnet] Live BirdNET window completed index=2 started_at=2026-03-16T12:33:55.826419+00:00 ended_at=2026-03-16T12:34:04.826419+00:00 detections=0 species=none
+2026-03-16 12:34:09,388 INFO [bird_monitor.birdnet] Manual recording stop requested by 192.168.178.39
+2026-03-16 12:34:09,388 INFO [bird_monitor.birdnet] Manual recording stop requested.
+2026-03-16 12:34:09,415 INFO [bird_monitor.birdnet] Recording session finished frame_count=359200 duration=22.45s sample_rate=16000 channels=1 device=Jabra BIZ 2400 USB: Audio (hw:1,0) peak_amplitude=0.247314 manual_stop_requested=True file=/var/lib/bird-monitor/recordings/2026/03/16/recording_20260316T123346_826419.wav
+2026-03-16 12:34:09,416 INFO [bird_monitor.birdnet] Saved continuous recording file=/var/lib/bird-monitor/recordings/2026/03/16/recording_20260316T123346_826419.wav mode=manual duration=22.45s sample_rate=16000 channels=1 device=Jabra BIZ 2400 USB: Audio (hw:1,0) size_bytes=718444
+2026-03-16 12:34:09,416 INFO [bird_monitor.birdnet] Submitting final partial live BirdNET window after recording stop started_at=2026-03-16T12:34:04.826419 sample_count=71200
+2026-03-16 12:34:09,416 INFO [bird_monitor.birdnet] Submitting live BirdNET window index=3 mode=manual started_at=2026-03-16T12:34:04.826419 ended_at=2026-03-16T12:34:09.276419 duration=4.45s sample_rate=16000 min_confidence=0.35
+2026-03-16 12:34:09,417 INFO [bird_monitor.birdnet] BirdNET classify request source=live-window-003 sample_rate=16000 kwargs={'min_conf': 0.35, 'return_all_detections': True, 'lat': 47.7765, 'lon': 12.3234, 'date': '2026-03-16T12:34:04.826419'} sample_summary={'sample_rate': 16000, 'sample_count': 71200, 'duration_seconds': 4.45, 'peak': 0.247314, 'rms': 0.005019, 'dtype': 'float32'}
+2026-03-16 12:34:09,417 INFO [bird_monitor.birdnet] BirdNET analysis started for live-window-003 size_bytes=buffer min_confidence=0.35 latitude=47.7765 longitude=12.3234 recorded_at=2026-03-16T12:34:04.826419
+2026-03-16 12:34:09,417 INFO [bird_monitor.birdnet] BirdNET buffer analysis preparing sample_rate=16000 kwargs={'min_conf': 0.35, 'return_all_detections': True, 'lat': 47.7765, 'lon': 12.3234, 'date': '2026-03-16T12:34:04.826419'} sample_summary={'sample_rate': 16000, 'sample_count': 71200, 'duration_seconds': 4.45, 'peak': 0.247314, 'rms': 0.005019, 'dtype': 'float32'}
+2026-03-16 12:34:09,417 INFO [bird_monitor.birdnet] BirdNET buffer analysis attempt=rate keyword
+2026-03-16 12:34:09,435 INFO [bird_monitor.birdnet] BirdNET buffer analysis succeeded attempt=rate keyword raw_detection_count=0
+2026-03-16 12:34:09,435 INFO [bird_monitor.birdnet] BirdNET path strategy succeeded strategy=in-memory-buffer source=live-window-003
+2026-03-16 12:34:09,435 INFO [bird_monitor.birdnet] BirdNET raw detections received count=0
+2026-03-16 12:34:09,435 INFO [bird_monitor.birdnet] BirdNET analysis finished for live-window-003 in 0.02s raw_detections=0 merged_detections=0 species=none
+2026-03-16 12:34:09,435 INFO [bird_monitor.birdnet] BirdNET found no bird species in live-window-003.
+2026-03-16 12:34:09,435 INFO [bird_monitor.birdnet] Live BirdNET window completed index=3 started_at=2026-03-16T12:34:04.826419+00:00 ended_at=2026-03-16T12:34:09.276419+00:00 detections=0 species=none
+2026-03-16 12:34:09,436 INFO [bird_monitor.birdnet] BirdNET found no detections in recording_20260316T123346_826419.wav, so no clips were created.
+2026-03-16 12:34:09,437 INFO [bird_monitor.birdnet] BirdNET found no birds in recording_20260316T123346_826419.wav after 3 successful live window(s). Removed the unneeded audio file but will keep the timeline entry.
+2026-03-16 12:34:09,437 INFO [bird_monitor.birdnet] Persisting timeline entry file=/var/lib/bird-monitor/recordings/2026/03/16/recording_20260316T123346_826419.wav duration=22.45s detections=0 clips=0 has_bird_activity=False
+2026-03-16 12:34:09,456 INFO [bird_monitor.birdnet] Saved recording 38 to the timeline with 0 BirdNET detection(s) and 0 clip file(s).

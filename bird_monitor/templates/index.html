@@ -198,8 +198,13 @@
 
         <section class="panel recordings-panel">
           <div class="panel-head">
-            <h2>Bird Clip Library</h2>
-            <p id="recordings-summary">No bird clips loaded yet.</p>
+            <div>
+              <h2>Bird Clip Library</h2>
+              <p id="recordings-summary">No bird clips loaded yet.</p>
+            </div>
+            <div class="panel-actions">
+              <button type="button" id="recordings-delete-all-button" class="danger-button">Delete all visible clips</button>
+            </div>
           </div>
           <div id="recordings-list" class="recordings-list">
             <div class="empty-state">Load a time range to see BirdNET-confirmed 9-second bird clips.</div>
