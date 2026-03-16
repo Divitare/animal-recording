@@ -57,35 +57,6 @@
             </div>
           </section>
 
-          <section class="pipeline-panel" aria-label="Background processing">
-            <div class="pipeline-head">
-              <h2>Background Pipeline</h2>
-              <p id="pipeline-mode-note">BirdNET checks a rolling 9-second window every 3 seconds while recording continues.</p>
-            </div>
-            <div class="pipeline-grid">
-              <article class="pipeline-card" id="pipeline-recording-card">
-                <span class="pipeline-label">Recorder</span>
-                <strong id="pipeline-recording-state">Waiting</strong>
-                <p id="pipeline-recording-detail">The microphone capture loop is idle.</p>
-              </article>
-              <article class="pipeline-card" id="pipeline-birdnet-card">
-                <span class="pipeline-label">BirdNET</span>
-                <strong id="pipeline-birdnet-state">Waiting</strong>
-                <p id="pipeline-birdnet-detail">Analysis starts on rolling 9-second windows every 3 seconds while recording continues.</p>
-              </article>
-              <article class="pipeline-card" id="pipeline-clips-card">
-                <span class="pipeline-label">Clips</span>
-                <strong id="pipeline-clips-state">Waiting</strong>
-                <p id="pipeline-clips-detail">Detected bird occurrences get their own clip files.</p>
-              </article>
-              <article class="pipeline-card" id="pipeline-result-card">
-                <span class="pipeline-label">Last Result</span>
-                <strong id="pipeline-result-state">No analysis yet</strong>
-                <p id="pipeline-result-detail">Live BirdNET detections and the last saved result appear here.</p>
-              </article>
-            </div>
-          </section>
-
           <dl class="status-grid">
             <div>
               <dt>Recordings</dt>

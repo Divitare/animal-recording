@@ -62,19 +62,6 @@ const dashboardElements = {
   totalDetections: document.querySelector("#total-detections"),
   currentDevice: document.querySelector("#current-device"),
   speciesState: document.querySelector("#species-state"),
-  pipelineModeNote: document.querySelector("#pipeline-mode-note"),
-  pipelineRecordingCard: document.querySelector("#pipeline-recording-card"),
-  pipelineRecordingState: document.querySelector("#pipeline-recording-state"),
-  pipelineRecordingDetail: document.querySelector("#pipeline-recording-detail"),
-  pipelineBirdnetCard: document.querySelector("#pipeline-birdnet-card"),
-  pipelineBirdnetState: document.querySelector("#pipeline-birdnet-state"),
-  pipelineBirdnetDetail: document.querySelector("#pipeline-birdnet-detail"),
-  pipelineClipsCard: document.querySelector("#pipeline-clips-card"),
-  pipelineClipsState: document.querySelector("#pipeline-clips-state"),
-  pipelineClipsDetail: document.querySelector("#pipeline-clips-detail"),
-  pipelineResultCard: document.querySelector("#pipeline-result-card"),
-  pipelineResultState: document.querySelector("#pipeline-result-state"),
-  pipelineResultDetail: document.querySelector("#pipeline-result-detail"),
   birdnetRuntimeSummary: document.querySelector("#birdnet-runtime-summary"),
   birdnetInstalledState: document.querySelector("#birdnet-installed-state"),
   birdnetBackendState: document.querySelector("#birdnet-backend-state"),
@@ -601,7 +588,6 @@ function dashboardRenderService(service) {
   dashboardElements.manualStopButton.disabled = !manualMode;
 
   dashboardRenderLiveDetections(service);
-  dashboardRenderPipeline(service);
   dashboardRenderBirdnetRuntime(service);
   dashboardRenderWaveform(service.waveform_samples || []);
 }
@@ -696,93 +682,6 @@ function dashboardBuildModeLabel(reason, manualMode, isRecording) {
     return isRecording ? "Scheduled recording live" : "Schedule monitoring";
   }
   return "Idle";
-}
-
-function dashboardRenderPipeline(service) {
-  const processingStage = service.processing_stage || "idle";
-  const lastSummary = service.last_processing_summary || "No BirdNET analysis has completed yet.";
-  const clipCount = Number(service.last_clip_count || 0);
-  const detectionCount = Number(service.last_detection_count || 0);
-  const detectedSpecies = (service.last_detected_species || []).join(", ");
-  const lastAnalysisDuration = service.birdnet_last_analysis_duration_seconds != null
-    ? `${Number(service.birdnet_last_analysis_duration_seconds).toFixed(2)} s`
-    : null;
-  const lastAnalysisScope = service.birdnet_last_analysis_scope || null;
-  const pendingLiveWindows = Number(service.birdnet_live_pending_windows || 0);
-  const liveDetectionCount = Number(service.live_detection_count || 0);
-  const liveDetectedSpecies = (service.live_detected_species || []).join(", ");
-
-  dashboardElements.pipelineModeNote.textContent = service.species_enabled
-    ? `BirdNET checks a rolling ${service.birdnet_live_window_seconds || 9}-second window every ${service.birdnet_live_interval_seconds || 3} seconds while the recording keeps running.`
-    : "BirdNET matching mode is unavailable.";
-
-  dashboardSetPipelineCard(
-    dashboardElements.pipelineRecordingCard,
-    dashboardElements.pipelineRecordingState,
-    dashboardElements.pipelineRecordingDetail,
-    service.is_recording ? "Capturing audio" : "Waiting for next recording",
-    service.is_recording
-      ? "The microphone is recording right now."
-      : (service.current_device_name || "BirdNET starts once recording begins."),
-    service.is_recording,
-    false,
-  );
-
-  const birdnetUnavailable = service.species_provider === "birdnet" && service.species_available === false;
-  const birdnetActive = Boolean(service.birdnet_live_analysis_active) || processingStage === "analyzing";
-  dashboardSetPipelineCard(
-    dashboardElements.pipelineBirdnetCard,
-    dashboardElements.pipelineBirdnetState,
-    dashboardElements.pipelineBirdnetDetail,
-    birdnetUnavailable ? "Unavailable" : (birdnetActive ? "Analyzing live window" : "Waiting for next window"),
-    birdnetUnavailable
-      ? (service.species_error || "BirdNET could not be loaded.")
-      : (
-        birdnetActive
-          ? (service.processing_message || "BirdNET is checking the newest rolling 9-second window.")
-          : (
-            lastAnalysisDuration
-              ? `Last ${lastAnalysisScope === "live-window" ? "rolling live-window analysis" : "analysis"} finished in ${lastAnalysisDuration}.`
-              : "BirdNET analyzes rolling 9-second windows every 3 seconds while recording keeps going."
-          )
-      ),
-    birdnetActive,
-    birdnetUnavailable,
-  );
-
-  const clipsActive = processingStage === "extracting-clips";
-  dashboardSetPipelineCard(
-    dashboardElements.pipelineClipsCard,
-    dashboardElements.pipelineClipsState,
-    dashboardElements.pipelineClipsDetail,
-    clipsActive ? "Saving clips" : (clipCount > 0 ? `Saved ${clipCount} clip(s)` : "Waiting for detections"),
-    clipsActive
-      ? (service.processing_message || "Writing separate WAV files for each detected bird occurrence.")
-      : (clipCount > 0 ? "Each detected bird occurrence was saved as its own audio file." : "When BirdNET finds birds, each occurrence gets its own clip file."),
-    clipsActive,
-    false,
-  );
-
-  dashboardSetPipelineCard(
-    dashboardElements.pipelineResultCard,
-    dashboardElements.pipelineResultState,
-    dashboardElements.pipelineResultDetail,
-    liveDetectionCount > 0
-      ? `${liveDetectionCount} live detection(s)`
-      : (detectionCount > 0 ? `${detectionCount} saved detection(s)` : "No detections yet"),
-    liveDetectionCount > 0 && liveDetectedSpecies
-      ? `Live updates so far: ${liveDetectedSpecies}. Pending BirdNET windows: ${pendingLiveWindows}.`
-      : (detectionCount > 0 && detectedSpecies ? `${lastSummary} Species: ${detectedSpecies}.` : lastSummary),
-    false,
-    false,
-  );
-}
-
-function dashboardSetPipelineCard(card, stateElement, detailElement, stateText, detailText, isActive, isAlert) {
-  stateElement.textContent = stateText;
-  detailElement.textContent = detailText;
-  card.classList.toggle("is-active", Boolean(isActive));
-  card.classList.toggle("is-alert", Boolean(isAlert));
 }
 
 function dashboardRenderBirdnetRuntime(service) {
