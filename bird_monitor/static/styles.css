@@ -865,6 +865,10 @@ button:hover {
 .recordings-list {
   display: grid;
   gap: 12px;
+  max-height: min(70vh, 920px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
 }
 
 .recording-item {
