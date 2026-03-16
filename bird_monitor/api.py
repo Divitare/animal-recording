@@ -139,6 +139,29 @@ def _remove_file_if_present(path_value: str | None) -> bool:
     return True
 
 
+def _collect_log_files() -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    for configured_path in (
+        current_app.config.get("BIRDNET_LOG_FILE"),
+        current_app.config.get("APP_LOG_FILE"),
+    ):
+        if not configured_path:
+            continue
+        base_path = Path(configured_path)
+        for candidate in [base_path, *sorted(base_path.parent.glob(f"{base_path.name}.*"))]:
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            candidates.append(candidate)
+
+    return candidates
+
+
 @api_bp.get("/status")
 def status():
     settings = RecorderSettings.get_or_create()
@@ -238,6 +261,49 @@ def clear_birdnet_logs():
             "message": "Bird monitor logs were cleared.",
             **cleared,
         }
+    )
+
+
+@api_bp.get("/birdnet/logs/download")
+def download_birdnet_logs():
+    log_files = _collect_log_files()
+    if not log_files:
+        return _json_error("No log files are available to download.", 404)
+
+    exports_dir = Path(current_app.config["EXPORTS_DIR"])
+    exports_dir.mkdir(parents=True, exist_ok=True)
+
+    temp_file = tempfile.NamedTemporaryFile(
+        prefix="bird-monitor-logs_",
+        suffix=".zip",
+        dir=exports_dir,
+        delete=False,
+    )
+    temp_file.close()
+
+    log_dir = Path(current_app.config["LOG_DIR"]).resolve()
+    with zipfile.ZipFile(temp_file.name, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        for file_path in log_files:
+            try:
+                archive_name = str(file_path.resolve().relative_to(log_dir))
+            except ValueError:
+                archive_name = file_path.name
+            archive.write(file_path, arcname=archive_name)
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            Path(temp_file.name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return response
+
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return send_file(
+        temp_file.name,
+        as_attachment=True,
+        download_name=f"bird-monitor-logs-{timestamp}.zip",
+        mimetype="application/zip",
     )
 
 

@@ -83,6 +83,7 @@ const dashboardElements = {
   birdnetLogPath: document.querySelector("#birdnet-log-path"),
   birdnetLogStatus: document.querySelector("#birdnet-log-status"),
   birdnetLogConsole: document.querySelector("#birdnet-log-console"),
+  downloadLogsButton: document.querySelector("#download-logs-button"),
   clearLogsButton: document.querySelector("#clear-logs-button"),
 };
 
@@ -269,6 +270,30 @@ function dashboardBindEvents() {
       const disposition = response.headers.get("content-disposition") || "";
       const fileNameMatch = disposition.match(/filename="?([^"]+)"?/i);
       const fileName = fileNameMatch ? fileNameMatch[1] : "bird-recordings.zip";
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      dashboardShowError(error);
+    }
+  });
+
+  dashboardElements.downloadLogsButton.addEventListener("click", async () => {
+    try {
+      const response = await fetch("/api/birdnet/logs/download");
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.error || "Log download failed");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") || "";
+      const fileNameMatch = disposition.match(/filename="?([^"]+)"?/i);
+      const fileName = fileNameMatch ? fileNameMatch[1] : "bird-monitor-logs.zip";
       const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = blobUrl;
@@ -527,7 +552,10 @@ async function dashboardLoadRecordings(resetZoom) {
     dashboardRenderRecordingsList(openLibraryIds);
     dashboardState.recordingsDataSignature = nextSignature;
     window.requestAnimationFrame(() => {
-      dashboardRestorePageScrollTop(previousPageScrollTop);
+      const currentPageScrollTop = dashboardCurrentPageScrollTop();
+      if (Math.abs(currentPageScrollTop - previousPageScrollTop) <= 48) {
+        dashboardRestorePageScrollTop(previousPageScrollTop);
+      }
     });
   }
 }
@@ -1304,7 +1332,19 @@ function dashboardBuildDetectionLibraryAccordion(detection, openLibraryIds = new
   const sourceAction = detection.recording_audio_url
     ? `<a class="secondary-button button-link" href="${detection.recording_audio_url}" download>Download source recording</a>`
     : `<span class="recording-clip-missing">Source recording audio was removed</span>`;
-  actionRow.innerHTML = `${clipAction}${sourceAction}`;
+  actionRow.innerHTML = `
+    ${clipAction}
+    ${sourceAction}
+    <button type="button" class="danger-button clip-delete-button">Delete recording</button>
+  `;
+  const deleteButton = actionRow.querySelector(".clip-delete-button");
+  deleteButton.addEventListener("click", async () => {
+    try {
+      await dashboardDeleteRecording(detection.recording_id, deleteButton);
+    } catch (error) {
+      dashboardShowError(error);
+    }
+  });
 
   const meta = document.createElement("div");
   meta.className = "recording-item-details";
