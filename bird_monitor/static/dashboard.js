@@ -18,6 +18,8 @@ const dashboardState = {
   livePollHandle: null,
   livePollInFlight: false,
   liveEventSource: null,
+  liveEventSourceReady: false,
+  liveStatusFallbackHandle: null,
   autoFollowRange: true,
   recordingsDataSignature: "",
   zoomFactor: 1,
@@ -221,6 +223,11 @@ function dashboardBindEvents() {
       dashboardState.liveEventSource.close();
       dashboardState.liveEventSource = null;
     }
+    dashboardState.liveEventSourceReady = false;
+    if (dashboardState.liveStatusFallbackHandle !== null) {
+      clearInterval(dashboardState.liveStatusFallbackHandle);
+      dashboardState.liveStatusFallbackHandle = null;
+    }
   });
 
   dashboardElements.rangeForm.addEventListener("submit", async (event) => {
@@ -407,6 +414,22 @@ async function dashboardLoadLiveStatus() {
   dashboardRenderService(payload.service);
 }
 
+function dashboardStartLiveStatusFallback() {
+  if (dashboardState.liveStatusFallbackHandle !== null) {
+    clearInterval(dashboardState.liveStatusFallbackHandle);
+  }
+  dashboardState.liveStatusFallbackHandle = window.setInterval(async () => {
+    if (dashboardState.liveEventSourceReady) {
+      return;
+    }
+    try {
+      await dashboardLoadLiveStatus();
+    } catch (error) {
+      dashboardShowError(error);
+    }
+  }, 250);
+}
+
 function dashboardStartLiveStream() {
   if (!("EventSource" in window)) {
     return;
@@ -417,9 +440,13 @@ function dashboardStartLiveStream() {
   }
 
   const liveSource = new EventSource("/api/live-stream");
+  liveSource.onopen = () => {
+    dashboardState.liveEventSourceReady = true;
+  };
   liveSource.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data);
+      dashboardState.liveEventSourceReady = true;
       dashboardState.status = payload.service;
       dashboardRenderService(payload.service);
     } catch (error) {
@@ -427,6 +454,7 @@ function dashboardStartLiveStream() {
     }
   };
   liveSource.onerror = () => {
+    dashboardState.liveEventSourceReady = false;
     if (liveSource.readyState === EventSource.CLOSED && dashboardState.liveEventSource === liveSource) {
       dashboardState.liveEventSource = null;
     }
@@ -457,9 +485,6 @@ function dashboardStartLivePolling() {
 
       const shouldRefreshRecordings = dashboardState.autoFollowRange || dashboardRangeCanReceiveUpdates();
       const tasks = [dashboardLoadBirdnetLogs()];
-      if (!dashboardState.liveEventSource) {
-        tasks.unshift(dashboardLoadLiveStatus());
-      }
       if (shouldRefreshRecordings) {
         tasks.push(dashboardLoadRecordings(false));
       }
@@ -690,7 +715,7 @@ function dashboardRenderPipeline(service) {
           ? (service.processing_message || "BirdNET is checking the newest finished 9-second window.")
           : (
             lastAnalysisDuration
-              ? `Last ${lastAnalysisScope === "recording-file" ? "full recording pass" : "analysis"} finished in ${lastAnalysisDuration}.`
+              ? `Last ${lastAnalysisScope === "live-window" ? "9-second live window" : "analysis"} finished in ${lastAnalysisDuration}.`
               : "BirdNET analyzes each finished 9-second window while recording keeps going."
           )
       ),
@@ -756,7 +781,7 @@ function dashboardRenderBirdnetRuntime(service) {
   dashboardElements.birdnetInstalledState.textContent = installedState;
   dashboardElements.birdnetBackendState.textContent = backend;
   dashboardElements.birdnetLastAnalysisState.textContent = lastFinishedAt
-    ? `${new Date(lastFinishedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${lastDuration != null ? ` (${Number(lastDuration).toFixed(1)} s)` : ""}${lastScope ? ` ${lastScope === "recording-file" ? "full-pass" : "live-window"}` : ""}`
+    ? `${new Date(lastFinishedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${lastDuration != null ? ` (${Number(lastDuration).toFixed(1)} s)` : ""}${lastScope ? ` ${lastScope === "live-window" ? "live-window" : "analysis"}` : ""}`
     : "No completed run";
   dashboardElements.birdnetLastTargetState.textContent = lastTarget ? dashboardShortenPath(lastTarget) : "None yet";
   dashboardElements.birdnetPackageSummary.textContent = `Packages: ${packageSummary}. Analysis mode: ${runtime.analysis_mode || "post-recording"}.`;
@@ -770,7 +795,7 @@ function dashboardRenderBirdnetRuntime(service) {
       ? "BirdNET is installed and actively analyzing the newest finished 9-second window right now."
       : (
         lastDuration != null
-          ? `BirdNET is installed. The last ${lastScope === "recording-file" ? "full confirmation pass" : "analysis"} took ${Number(lastDuration).toFixed(2)} seconds.`
+          ? `BirdNET is installed. The last ${lastScope === "live-window" ? "9-second live-window analysis" : "analysis"} took ${Number(lastDuration).toFixed(2)} seconds.`
           : "BirdNET is installed. It analyzes finished 9-second windows during recording and logs every analysis step below."
       );
     return;
@@ -868,8 +893,8 @@ function dashboardRenderWaveform(samples) {
   context.beginPath();
   samples.forEach((value, index) => {
     const x = (index / Math.max(samples.length - 1, 1)) * width;
-    const normalized = Math.max(0, Math.min(1, value));
-    const y = height / 2 - (normalized * height * 0.38);
+    const normalized = Math.max(-1, Math.min(1, value));
+    const y = height / 2 - (normalized * height * 0.42);
     if (index === 0) {
       context.moveTo(x, y);
     } else {
@@ -1512,7 +1537,7 @@ function dashboardShortenPath(value) {
 async function initDashboard() {
   dashboardSetDefaultRange();
   dashboardBindEvents();
-  dashboardRenderWaveform(new Array(160).fill(0));
+  dashboardRenderWaveform(new Array(240).fill(0));
   try {
     await Promise.all([
       dashboardLoadStatus(),
@@ -1520,6 +1545,7 @@ async function initDashboard() {
       dashboardLoadBirdnetLogs(),
     ]);
     dashboardStartLiveStream();
+    dashboardStartLiveStatusFallback();
     dashboardStartLivePolling();
   } catch (error) {
     dashboardShowError(error);

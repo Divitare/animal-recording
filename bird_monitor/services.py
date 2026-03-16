@@ -102,7 +102,7 @@ class RecordingManager:
         runtime_details = self._runtime_details()
         self._manual_mode = False
         self._manual_stop_requested = False
-        self._waveform_samples: deque[float] = deque([0.0] * 160, maxlen=240)
+        self._waveform_samples: deque[float] = deque([0.0] * 240, maxlen=320)
         self._status: dict[str, object] = {
             "started": False,
             "is_recording": False,
@@ -239,7 +239,7 @@ class RecordingManager:
     def _reset_waveform(self) -> None:
         with self._waveform_lock:
             self._waveform_samples.clear()
-            self._waveform_samples.extend([0.0] * 160)
+            self._waveform_samples.extend([0.0] * 240)
         self._set_status(live_level=0.0)
 
     def _append_waveform(self, chunk: np.ndarray) -> None:
@@ -247,14 +247,13 @@ class RecordingManager:
         if mono.ndim > 1:
             mono = np.mean(mono, axis=1)
 
-        amplitudes = np.abs(mono)
-        bucket_count = min(24, max(6, int(amplitudes.size / 128) or 1))
-        buckets = np.array_split(amplitudes, bucket_count)
-        values = [
-            float(np.clip(np.mean(bucket) * 7.5, 0.0, 1.0))
-            for bucket in buckets
-            if bucket.size > 0
-        ]
+        if mono.size == 0:
+            return
+
+        sample_points = min(48, max(12, int(mono.size / 96) or 1))
+        source_indexes = np.linspace(0, mono.size - 1, num=sample_points, dtype=np.float32)
+        sampled = np.interp(source_indexes, np.arange(mono.size, dtype=np.float32), mono)
+        values = np.clip(sampled * 1.8, -1.0, 1.0).astype(np.float32).tolist()
 
         if not values:
             return
@@ -262,7 +261,7 @@ class RecordingManager:
         with self._waveform_lock:
             self._waveform_samples.extend(values)
 
-        self._set_status(live_level=max(values))
+        self._set_status(live_level=float(np.clip(np.max(np.abs(mono)) * 1.2, 0.0, 1.0)))
 
     def _species_state(self, settings: RecorderSettings) -> tuple[str, bool, bool, str | None]:
         requested_provider = (settings.species_provider or "disabled").strip().casefold()
@@ -410,33 +409,6 @@ class RecordingManager:
             "species": self._unique_species_names(detections),
         }
         return detections, summary
-
-    def _classify_recording_file(
-        self,
-        *,
-        file_path: Path,
-        recording_started_at: datetime,
-        latitude: float | None,
-        longitude: float | None,
-        min_confidence: float,
-    ) -> list[SessionSpeciesDetection]:
-        predictions = self._species_classifier.classify(
-            file_path,
-            latitude=latitude,
-            longitude=longitude,
-            recorded_at=recording_started_at,
-            min_confidence=min_confidence,
-        )
-        return [
-            SessionSpeciesDetection(
-                started_at=recording_started_at + timedelta(seconds=prediction.start_offset_seconds),
-                ended_at=recording_started_at + timedelta(seconds=prediction.end_offset_seconds),
-                confidence=prediction.confidence,
-                species_common_name=prediction.common_name,
-                species_scientific_name=prediction.scientific_name,
-            )
-            for prediction in predictions
-        ]
 
     def _create_species_detections(
         self,
@@ -861,53 +833,6 @@ class RecordingManager:
                         self._set_status(species_error=None, last_species_analysis_error=None)
                         last_processing_summary, detected_species = self._build_recording_summary(live_detections)
 
-                    if species_enabled and not live_detections and not live_failures and file_path.exists():
-                        self._set_status(
-                            processing_stage="analyzing",
-                            processing_message="No birds were found in the live 9-second windows. BirdNET is running one final full-recording confirmation pass.",
-                        )
-                        self._birdnet_logger.info(
-                            "Live BirdNET windows found no birds in %s. Running one final full-recording confirmation pass.",
-                            file_path.name,
-                        )
-                        try:
-                            live_detections = self._classify_recording_file(
-                                file_path=file_path,
-                                recording_started_at=started_at,
-                                latitude=settings.latitude,
-                                longitude=settings.longitude,
-                                min_confidence=settings.species_min_confidence,
-                            )
-                            analysis_details = self._analysis_details()
-                            self._set_status(
-                                species_error=None,
-                                last_species_analysis_error=None,
-                                birdnet_last_analysis_target=analysis_details.get("file_path"),
-                                birdnet_last_analysis_started_at=analysis_details.get("started_at"),
-                                birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
-                                birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
-                                birdnet_last_analysis_scope=analysis_details.get("analysis_scope"),
-                                birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
-                                birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
-                            )
-                            latest_live_window_detections = self._top_live_window_species(live_detections)
-                            last_processing_summary, detected_species = self._build_recording_summary(live_detections)
-                        except Exception as exc:
-                            analysis_details = self._analysis_details()
-                            live_failures.append(str(exc))
-                            self._set_status(
-                                species_error=f"Final BirdNET confirmation pass failed: {exc}",
-                                last_species_analysis_error=f"Final BirdNET confirmation pass failed: {exc}",
-                                birdnet_last_analysis_target=analysis_details.get("file_path"),
-                                birdnet_last_analysis_started_at=analysis_details.get("started_at"),
-                                birdnet_last_analysis_finished_at=analysis_details.get("finished_at"),
-                                birdnet_last_analysis_duration_seconds=analysis_details.get("duration_seconds"),
-                                birdnet_last_analysis_scope=analysis_details.get("analysis_scope"),
-                                birdnet_last_raw_detection_count=analysis_details.get("raw_detection_count", 0),
-                                birdnet_last_merged_detection_count=analysis_details.get("merged_detection_count", 0),
-                            )
-                            last_processing_summary = f"BirdNET final confirmation pass failed: {exc}"
-
                     if live_failures and successful_window_count > 0:
                         last_processing_summary = f"{last_processing_summary} Some live windows failed: {live_failures[-1]}"
 
@@ -934,7 +859,7 @@ class RecordingManager:
                     discard_recording_audio = species_enabled and successful_window_count > 0 and not live_detections and not live_failures
                     if discard_recording_audio:
                         last_processing_summary = (
-                            "BirdNET checked the live windows and the final confirmation pass, found no birds, and removed the saved audio file. "
+                            "BirdNET checked the live 9-second windows, found no birds, and removed the saved audio file. "
                             "The timeline entry was kept so the recording time is still visible."
                         )
 
