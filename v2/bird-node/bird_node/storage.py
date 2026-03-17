@@ -93,6 +93,18 @@ class BirdNodeStorage:
                     overflow_event_count INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS health_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    node_id TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    time_source TEXT NOT NULL,
+                    time_synchronized INTEGER NOT NULL DEFAULT 0,
+                    app_commit TEXT,
+                    runtime_backend TEXT,
+                    birdnet_version TEXT,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_health_snapshots_captured_at ON health_snapshots(captured_at);
                 """
             )
             columns = {
@@ -272,6 +284,141 @@ class BirdNodeStorage:
                             str(item.get("updated_at") or updated_at),
                         ),
                     )
+
+    def record_health_snapshot(self, payload: dict[str, Any]) -> int:
+        serialized_payload = json.dumps(payload, indent=2, sort_keys=True)
+        with self._lock:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO health_snapshots (
+                        node_id,
+                        captured_at,
+                        time_source,
+                        time_synchronized,
+                        app_commit,
+                        runtime_backend,
+                        birdnet_version,
+                        payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(payload.get("node_id") or ""),
+                        str(payload.get("captured_at") or ""),
+                        str(payload.get("time_source") or "system"),
+                        1 if bool(payload.get("time_synchronized")) else 0,
+                        payload.get("app_commit"),
+                        payload.get("runtime_backend"),
+                        payload.get("birdnet_version"),
+                        serialized_payload,
+                    ),
+                )
+                return int(cursor.lastrowid)
+
+    def list_detections(
+        self,
+        *,
+        since_utc: str | None = None,
+        until_utc: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if since_utc:
+            clauses.append("started_at >= ?")
+            parameters.append(since_utc)
+        if until_utc:
+            clauses.append("started_at <= ?")
+            parameters.append(until_utc)
+
+        query = """
+            SELECT
+                id,
+                event_id,
+                node_id,
+                species_common_name,
+                species_scientific_name,
+                confidence,
+                started_at,
+                ended_at,
+                clip_file_path,
+                clip_duration_seconds,
+                sample_rate,
+                channels,
+                source_window_started_at,
+                source_window_ended_at,
+                analysis_duration_seconds,
+                location_name,
+                latitude,
+                longitude,
+                created_at
+            FROM detections
+        """
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY started_at ASC"
+
+        with self._lock:
+            with self._connect() as connection:
+                rows = connection.execute(query, tuple(parameters)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_health_snapshots(
+        self,
+        *,
+        since_utc: str | None = None,
+        until_utc: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if since_utc:
+            clauses.append("captured_at >= ?")
+            parameters.append(since_utc)
+        if until_utc:
+            clauses.append("captured_at <= ?")
+            parameters.append(until_utc)
+
+        query = """
+            SELECT
+                id,
+                node_id,
+                captured_at,
+                time_source,
+                time_synchronized,
+                app_commit,
+                runtime_backend,
+                birdnet_version,
+                payload_json
+            FROM health_snapshots
+        """
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY captured_at ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters.append(int(limit))
+
+        with self._lock:
+            with self._connect() as connection:
+                rows = connection.execute(query, tuple(parameters)).fetchall()
+
+        snapshots: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+            snapshots.append(
+                {
+                    "id": int(row["id"]),
+                    "node_id": row["node_id"],
+                    "captured_at": row["captured_at"],
+                    "time_source": row["time_source"],
+                    "time_synchronized": bool(row["time_synchronized"]),
+                    "app_commit": row["app_commit"],
+                    "runtime_backend": row["runtime_backend"],
+                    "birdnet_version": row["birdnet_version"],
+                    "payload": payload,
+                }
+            )
+        return snapshots
 
     def load_metrics_summary(self, *, max_days: int = 14) -> dict[str, Any]:
         with self._lock:

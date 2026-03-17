@@ -54,6 +54,7 @@ class BirdNodeConfig:
     rolling_audio_buffer_seconds: int
     detection_clip_padding_seconds: float
     write_status_interval_seconds: float
+    health_snapshot_interval_seconds: float
     clipping_peak_threshold: float
     silence_rms_threshold: float
     silence_alert_seconds: float
@@ -106,6 +107,7 @@ def load_config() -> BirdNodeConfig:
         rolling_audio_buffer_seconds=_env_int("BIRD_MONITOR_AUDIO_BUFFER_SECONDS", 120),
         detection_clip_padding_seconds=_env_float("BIRD_MONITOR_DETECTION_CLIP_PADDING_SECONDS", 0.4),
         write_status_interval_seconds=_env_float("BIRD_MONITOR_STATUS_WRITE_INTERVAL_SECONDS", 2.0),
+        health_snapshot_interval_seconds=_env_float("BIRD_MONITOR_HEALTH_SNAPSHOT_INTERVAL_SECONDS", 300.0),
         clipping_peak_threshold=_env_float("BIRD_MONITOR_CLIPPING_PEAK_THRESHOLD", 0.98),
         silence_rms_threshold=_env_float("BIRD_MONITOR_SILENCE_RMS_THRESHOLD", 0.003),
         silence_alert_seconds=_env_float("BIRD_MONITOR_SILENCE_ALERT_SECONDS", 30.0),

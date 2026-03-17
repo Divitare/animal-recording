@@ -268,6 +268,9 @@ class BirdNodeService:
         self.last_successful_analysis_at: datetime | None = None
         self.last_successful_analysis_coverage_end_at: datetime | None = None
         self.consecutive_birdnet_failures: int = 0
+        self.last_health_snapshot_monotonic: float | None = None
+        self.last_health_snapshot_id: int | None = None
+        self.last_health_snapshot_at: datetime | None = None
         self.last_status_write = 0.0
 
     def run_forever(self) -> None:
@@ -864,6 +867,38 @@ class BirdNodeService:
             ],
         }
 
+    def _build_time_status(self, now_utc: datetime) -> dict[str, object]:
+        return {
+            "current_utc": utc_iso(now_utc),
+            "source": "system",
+            "synchronized": False,
+        }
+
+    def _maybe_store_health_snapshot(self, status_payload: dict[str, object], *, force: bool = False) -> None:
+        now_monotonic = time.monotonic()
+        if not force and self.last_health_snapshot_monotonic is not None:
+            elapsed = now_monotonic - self.last_health_snapshot_monotonic
+            if elapsed < self.config.health_snapshot_interval_seconds:
+                return
+
+        runtime_details = dict((((status_payload.get("service") or {})).get("runtime_details")) or {})
+        packages = dict((runtime_details.get("packages") or {}))
+        snapshot_payload = {
+            "captured_at": (((status_payload.get("time") or {})).get("current_utc")),
+            "node_id": self.config.node_id,
+            "time_source": (((status_payload.get("time") or {})).get("source")) or "system",
+            "time_synchronized": bool((((status_payload.get("time") or {})).get("synchronized"))),
+            "app_commit": self.config.app_commit,
+            "runtime_backend": runtime_details.get("runtime_backend"),
+            "birdnet_version": packages.get("birdnetlib"),
+            "payload": status_payload,
+        }
+        snapshot_id = self.storage.record_health_snapshot(snapshot_payload)
+        self.last_health_snapshot_monotonic = now_monotonic
+        self.last_health_snapshot_id = snapshot_id
+        current_utc = (((status_payload.get("time") or {})).get("current_utc"))
+        self.last_health_snapshot_at = _parse_utc_or_none(current_utc)
+
     def _maybe_write_status(self, *, recording: bool, message: str) -> None:
         now = time.monotonic()
         if (now - self.last_status_write) < self.config.write_status_interval_seconds:
@@ -873,6 +908,7 @@ class BirdNodeService:
 
     def _write_status(self, *, started: bool = True, recording: bool, message: str) -> None:
         self._flush_pending_metrics()
+        now_utc = datetime.utcnow()
         runtime_details = dict(getattr(self.classifier, "runtime_details", {}) or {})
         system_health = disk_usage_summary(
             self.config.data_dir,
@@ -884,39 +920,56 @@ class BirdNodeService:
                 "uptime_seconds": round(time.monotonic() - self.service_started_monotonic, 3),
             }
         )
-        self.storage.write_status(
-            {
-                "app": {
-                    "commit": self.config.app_commit,
-                    "variant": "v2-bird-node",
-                },
-                "service": {
-                    "started": started,
-                    "recording": recording,
-                    "node_id": self.config.node_id,
-                    "current_device_name": self.current_device_name,
-                    "species_provider": self.config.species_provider,
-                    "species_available": self.classifier.available(),
-                    "species_error": getattr(self.classifier, "failure_reason", None),
-                    "last_error": self.last_error,
-                    "last_analysis_duration_seconds": self.last_analysis_duration_seconds,
-                    "last_detection_at": utc_iso(self.last_detection_at),
-                    "last_event_id": self.last_event_id,
-                    "last_detected_species": self.last_detection_species,
-                    "pending_windows": len(self.pending_windows),
-                    "saved_detection_count": self.total_saved_detections,
-                    "status_file": str(self.config.status_file),
-                    "database_path": str(self.config.database_path),
-                    "log_dir": str(self.config.log_dir),
-                    "message": message,
-                    "updated_at": utc_iso(datetime.utcnow()),
-                    "runtime_details": runtime_details,
-                },
-                "health": {
-                    "microphone": self._build_microphone_health(),
-                    "birdnet": self._build_birdnet_health(runtime_details),
-                    "system": system_health,
-                },
-                "statistics": self._build_statistics(),
-            }
-        )
+        status_payload = {
+            "app": {
+                "commit": self.config.app_commit,
+                "variant": "v2-bird-node",
+            },
+            "time": self._build_time_status(now_utc),
+            "service": {
+                "started": started,
+                "recording": recording,
+                "node_id": self.config.node_id,
+                "current_device_name": self.current_device_name,
+                "species_provider": self.config.species_provider,
+                "species_available": self.classifier.available(),
+                "species_error": getattr(self.classifier, "failure_reason", None),
+                "last_error": self.last_error,
+                "last_analysis_duration_seconds": self.last_analysis_duration_seconds,
+                "last_detection_at": utc_iso(self.last_detection_at),
+                "last_event_id": self.last_event_id,
+                "last_detected_species": self.last_detection_species,
+                "last_health_snapshot_id": self.last_health_snapshot_id,
+                "last_health_snapshot_at": utc_iso(self.last_health_snapshot_at),
+                "pending_windows": len(self.pending_windows),
+                "saved_detection_count": self.total_saved_detections,
+                "status_file": str(self.config.status_file),
+                "database_path": str(self.config.database_path),
+                "log_dir": str(self.config.log_dir),
+                "message": message,
+                "updated_at": utc_iso(now_utc),
+                "runtime_details": runtime_details,
+            },
+            "health": {
+                "microphone": self._build_microphone_health(),
+                "birdnet": self._build_birdnet_health(runtime_details),
+                "system": system_health,
+            },
+            "statistics": self._build_statistics(),
+        }
+        self._maybe_store_health_snapshot(status_payload, force=not started or self.last_health_snapshot_monotonic is None)
+        service_payload = status_payload["service"]
+        if isinstance(service_payload, dict):
+            service_payload["last_health_snapshot_id"] = self.last_health_snapshot_id
+            service_payload["last_health_snapshot_at"] = utc_iso(self.last_health_snapshot_at)
+        self.storage.write_status(status_payload)
+
+
+def _parse_utc_or_none(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value[:-1] if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
