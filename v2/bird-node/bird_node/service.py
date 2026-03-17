@@ -11,19 +11,55 @@ from pathlib import Path
 
 import numpy as np
 
-from .audio import save_audio_samples, stream_input_chunks
+from .audio import peak_amplitude, save_audio_samples, stream_input_chunks
 from .config import BirdNodeConfig
+from .health import disk_usage_summary, read_cpu_temperature_celsius, root_mean_square
 from .runtime_logging import get_application_logger, get_birdnet_logger
 from .species import build_species_classifier
 from .storage import BirdNodeStorage
 
 SESSION_DETECTION_MERGE_GAP_SECONDS = 1.5
+MICROPHONE_STALE_AFTER_SECONDS = 10.0
+BIRDNET_FAILURES_FOR_FAILING_HEALTH = 3
 
 
 def utc_iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat() + "Z"
+
+
+def hours_from_seconds(value: float | int | None) -> float:
+    return round(float(value or 0.0) / 3600.0, 4)
+
+
+def empty_metric_totals() -> dict[str, float | int]:
+    return {
+        "recorded_seconds": 0.0,
+        "analyzed_seconds": 0.0,
+        "microphone_uptime_seconds": 0.0,
+        "detection_count": 0,
+        "birdnet_success_count": 0,
+        "birdnet_failure_count": 0,
+        "clipping_event_count": 0,
+        "silence_event_count": 0,
+        "overflow_event_count": 0,
+    }
+
+
+def split_interval_by_utc_day(started_at: datetime, ended_at: datetime) -> list[tuple[str, float]]:
+    if ended_at <= started_at:
+        return []
+
+    buckets: list[tuple[str, float]] = []
+    cursor = started_at
+    while cursor.date() < ended_at.date():
+        next_midnight = datetime.combine(cursor.date() + timedelta(days=1), datetime.min.time())
+        buckets.append((cursor.date().isoformat(), max((next_midnight - cursor).total_seconds(), 0.0)))
+        cursor = next_midnight
+
+    buckets.append((cursor.date().isoformat(), max((ended_at - cursor).total_seconds(), 0.0)))
+    return buckets
 
 
 @dataclass(frozen=True)
@@ -210,6 +246,11 @@ class BirdNodeService:
         self.analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bird-node-birdnet")
         self.pending_windows: list[PendingWindow] = []
         self.recent_saved_detections: list[SessionSpeciesDetection] = []
+        self.service_started_at = datetime.utcnow()
+        self.service_started_monotonic = time.monotonic()
+        self.metrics_summary: dict[str, object] = {"totals": empty_metric_totals(), "daily": [], "updated_at": None}
+        self.pending_total_metrics: dict[str, float | int] = empty_metric_totals()
+        self.pending_daily_metrics: dict[str, dict[str, float | int]] = {}
         self.total_saved_detections = 0
         self.last_analysis_duration_seconds: float | None = None
         self.last_error: str | None = None
@@ -217,10 +258,24 @@ class BirdNodeService:
         self.last_detection_species: list[str] = []
         self.last_detection_at: datetime | None = None
         self.last_event_id: str | None = None
+        self.last_audio_chunk_at: datetime | None = None
+        self.last_audio_peak_amplitude: float = 0.0
+        self.last_audio_rms: float = 0.0
+        self.current_silence_streak_seconds: float = 0.0
+        self.current_clipping_streak_seconds: float = 0.0
+        self.last_clipping_at: datetime | None = None
+        self.last_overflow_at: datetime | None = None
+        self.last_successful_analysis_at: datetime | None = None
+        self.last_successful_analysis_coverage_end_at: datetime | None = None
+        self.consecutive_birdnet_failures: int = 0
         self.last_status_write = 0.0
 
     def run_forever(self) -> None:
         self.storage.initialize()
+        self.metrics_summary = self.storage.load_metrics_summary(max_days=self.config.status_history_days)
+        self.total_saved_detections = int(
+            ((self.metrics_summary.get("totals") or {}).get("detection_count") or 0)
+        )
 
         if self.config.disable_recorder:
             self.logger.warning("Recorder is disabled by configuration. Exiting without starting audio capture.")
@@ -277,7 +332,20 @@ class BirdNodeService:
                 self.current_device_name = chunk.device_name
                 self.logger.info("Audio capture opened device=%s index=%s", chunk.device_name, chunk.device_index)
 
-            rolling_buffer.append(chunk.samples)
+            chunk_start_frame = rolling_buffer.append(chunk.samples)
+            chunk_end_frame = chunk_start_frame + int(chunk.samples.shape[0])
+            chunk_started_at = stream_started_at + timedelta(
+                seconds=float(chunk_start_frame / max(self.config.sample_rate, 1))
+            )
+            chunk_ended_at = stream_started_at + timedelta(
+                seconds=float(chunk_end_frame / max(self.config.sample_rate, 1))
+            )
+            self._observe_audio_chunk(
+                chunk.samples,
+                chunk_started_at=chunk_started_at,
+                chunk_ended_at=chunk_ended_at,
+                overflowed=chunk.overflowed,
+            )
 
             for window_samples, window_start_frame in accumulator.push(chunk.samples):
                 window_started_at = stream_started_at + timedelta(
@@ -414,12 +482,22 @@ class BirdNodeService:
             result = pending_window.future.result()
         except Exception as exc:
             self.last_error = str(exc)
+            self.consecutive_birdnet_failures += 1
+            self._add_count_metric("birdnet_failure_count", pending_window.window_ended_at, 1)
             self.birdnet_logger.exception(
                 "Live BirdNET window failed window_started_at=%s window_ended_at=%s",
                 pending_window.window_started_at,
                 pending_window.window_ended_at,
             )
             return
+
+        self.consecutive_birdnet_failures = 0
+        self.last_successful_analysis_at = pending_window.window_ended_at
+        self._add_count_metric("birdnet_success_count", pending_window.window_ended_at, 1)
+        self._record_successfully_analyzed_coverage(
+            pending_window.window_started_at,
+            pending_window.window_ended_at,
+        )
 
         self._handle_analysis_result(
             result,
@@ -479,6 +557,10 @@ class BirdNodeService:
                     "created_at": utc_iso(datetime.utcnow()),
                 }
             )
+            self.metrics_summary = self.storage.load_metrics_summary(max_days=self.config.status_history_days)
+            self.total_saved_detections = int(
+                ((self.metrics_summary.get("totals") or {}).get("detection_count") or 0)
+            )
             self.logger.info(
                 "Saved bird detection record_id=%s event_id=%s species=%s confidence=%.3f started_at=%s ended_at=%s clip=%s",
                 record_id,
@@ -489,6 +571,53 @@ class BirdNodeService:
                 utc_iso(detection.ended_at),
                 clip_path,
             )
+
+    def _observe_audio_chunk(
+        self,
+        samples: np.ndarray,
+        *,
+        chunk_started_at: datetime,
+        chunk_ended_at: datetime,
+        overflowed: bool,
+    ) -> None:
+        duration_seconds = max((chunk_ended_at - chunk_started_at).total_seconds(), 0.0)
+        peak = peak_amplitude(samples)
+        rms = root_mean_square(samples)
+
+        self.last_audio_chunk_at = chunk_ended_at
+        self.last_audio_peak_amplitude = peak
+        self.last_audio_rms = rms
+
+        self._add_duration_metric("recorded_seconds", chunk_started_at, chunk_ended_at)
+        self._add_duration_metric("microphone_uptime_seconds", chunk_started_at, chunk_ended_at)
+
+        if peak >= self.config.clipping_peak_threshold:
+            self.current_clipping_streak_seconds += duration_seconds
+            self.last_clipping_at = chunk_ended_at
+            self._add_count_metric("clipping_event_count", chunk_ended_at, 1)
+        else:
+            self.current_clipping_streak_seconds = 0.0
+
+        if rms <= self.config.silence_rms_threshold:
+            self.current_silence_streak_seconds += duration_seconds
+            self._add_count_metric("silence_event_count", chunk_ended_at, 1)
+        else:
+            self.current_silence_streak_seconds = 0.0
+
+        if overflowed:
+            self.last_overflow_at = chunk_ended_at
+            self._add_count_metric("overflow_event_count", chunk_ended_at, 1)
+
+    def _record_successfully_analyzed_coverage(self, started_at: datetime, ended_at: datetime) -> None:
+        unique_started_at = started_at
+        if self.last_successful_analysis_coverage_end_at is not None:
+            unique_started_at = max(unique_started_at, self.last_successful_analysis_coverage_end_at)
+
+        if ended_at > unique_started_at:
+            self._add_duration_metric("analyzed_seconds", unique_started_at, ended_at)
+
+        if self.last_successful_analysis_coverage_end_at is None or ended_at > self.last_successful_analysis_coverage_end_at:
+            self.last_successful_analysis_coverage_end_at = ended_at
 
     def _merge_session_detections(
         self,
@@ -600,6 +729,141 @@ class BirdNodeService:
         filename = f"detection_{detected_at.strftime('%Y%m%dT%H%M%S_%f')}_{event_id}_{safe_name}.wav"
         return day_path / filename
 
+    def _add_duration_metric(self, metric_name: str, started_at: datetime, ended_at: datetime) -> None:
+        for day_utc, seconds in split_interval_by_utc_day(started_at, ended_at):
+            self.pending_total_metrics[metric_name] = float(self.pending_total_metrics.get(metric_name, 0.0) or 0.0) + seconds
+            day_bucket = self._ensure_daily_metric_bucket(day_utc)
+            day_bucket[metric_name] = float(day_bucket.get(metric_name, 0.0) or 0.0) + seconds
+
+    def _add_count_metric(self, metric_name: str, occurred_at: datetime, amount: int = 1) -> None:
+        if amount == 0:
+            return
+        self.pending_total_metrics[metric_name] = int(self.pending_total_metrics.get(metric_name, 0) or 0) + int(amount)
+        day_bucket = self._ensure_daily_metric_bucket(occurred_at.date().isoformat())
+        day_bucket[metric_name] = int(day_bucket.get(metric_name, 0) or 0) + int(amount)
+
+    def _ensure_daily_metric_bucket(self, day_utc: str) -> dict[str, float | int]:
+        bucket = self.pending_daily_metrics.get(day_utc)
+        if bucket is None:
+            bucket = empty_metric_totals()
+            self.pending_daily_metrics[day_utc] = bucket
+        return bucket
+
+    def _flush_pending_metrics(self) -> None:
+        if not self.pending_daily_metrics and not any(self.pending_total_metrics.get(key) for key in self.pending_total_metrics):
+            return
+
+        updated_at = utc_iso(datetime.utcnow()) or ""
+        day_updates = [
+            {"day_utc": day_utc, "updated_at": updated_at, **values}
+            for day_utc, values in self.pending_daily_metrics.items()
+        ]
+        self.storage.persist_metric_deltas(
+            totals=self.pending_total_metrics,
+            day_updates=day_updates,
+            updated_at=updated_at,
+        )
+        self.pending_total_metrics = empty_metric_totals()
+        self.pending_daily_metrics = {}
+        self.metrics_summary = self.storage.load_metrics_summary(max_days=self.config.status_history_days)
+        self.total_saved_detections = int(
+            ((self.metrics_summary.get("totals") or {}).get("detection_count") or 0)
+        )
+
+    def _build_microphone_health(self) -> dict[str, object]:
+        now = datetime.utcnow()
+        status = "starting"
+        reasons: list[str] = []
+
+        if self.current_device_name is None:
+            status = "waiting-for-device"
+        elif self.last_audio_chunk_at is None:
+            status = "starting"
+        else:
+            if (now - self.last_audio_chunk_at).total_seconds() > MICROPHONE_STALE_AFTER_SECONDS:
+                status = "stalled"
+                reasons.append("No recent audio chunks were received from the microphone.")
+            elif self.current_clipping_streak_seconds >= self.config.live_step_seconds:
+                status = "clipping"
+                reasons.append("Recent microphone audio clipped at or above the configured peak threshold.")
+            elif self.current_silence_streak_seconds >= self.config.silence_alert_seconds:
+                status = "silent"
+                reasons.append("The microphone has been near-silent for longer than the configured alert window.")
+            elif self.last_overflow_at is not None and (now - self.last_overflow_at).total_seconds() <= MICROPHONE_STALE_AFTER_SECONDS:
+                status = "overflowing"
+                reasons.append("The audio input stream reported a recent overflow.")
+            else:
+                status = "healthy"
+
+        totals = (self.metrics_summary.get("totals") or {})
+        return {
+            "status": status,
+            "device_name": self.current_device_name,
+            "last_audio_chunk_at": utc_iso(self.last_audio_chunk_at),
+            "last_peak_amplitude": round(self.last_audio_peak_amplitude, 6),
+            "last_rms_amplitude": round(self.last_audio_rms, 6),
+            "clipping_peak_threshold": self.config.clipping_peak_threshold,
+            "silence_rms_threshold": self.config.silence_rms_threshold,
+            "silence_alert_seconds": self.config.silence_alert_seconds,
+            "current_silence_streak_seconds": round(self.current_silence_streak_seconds, 3),
+            "current_clipping_streak_seconds": round(self.current_clipping_streak_seconds, 3),
+            "last_clipping_at": utc_iso(self.last_clipping_at),
+            "last_overflow_at": utc_iso(self.last_overflow_at),
+            "clipping_event_count_total": int(totals.get("clipping_event_count") or 0),
+            "silence_event_count_total": int(totals.get("silence_event_count") or 0),
+            "overflow_event_count_total": int(totals.get("overflow_event_count") or 0),
+            "reasons": reasons,
+        }
+
+    def _build_birdnet_health(self, runtime_details: dict[str, object]) -> dict[str, object]:
+        totals = (self.metrics_summary.get("totals") or {})
+        status = "healthy"
+        reasons: list[str] = []
+
+        if not self.classifier.available():
+            status = "unavailable"
+            reasons.append(getattr(self.classifier, "failure_reason", None) or "BirdNET is not available.")
+        elif self.consecutive_birdnet_failures >= BIRDNET_FAILURES_FOR_FAILING_HEALTH:
+            status = "failing"
+            reasons.append("BirdNET analysis has failed repeatedly in the current session.")
+        elif int(totals.get("birdnet_failure_count") or 0) > 0 and self.last_successful_analysis_at is None:
+            status = "degraded"
+            reasons.append("BirdNET has recorded failures and has not completed a successful analysis in this session yet.")
+
+        return {
+            "status": status,
+            "available": self.classifier.available(),
+            "provider": self.config.species_provider,
+            "runtime_backend": runtime_details.get("runtime_backend"),
+            "analysis_mode": runtime_details.get("analysis_mode"),
+            "last_successful_analysis_at": utc_iso(self.last_successful_analysis_at),
+            "last_analysis_duration_seconds": self.last_analysis_duration_seconds,
+            "consecutive_failures": self.consecutive_birdnet_failures,
+            "success_count_total": int(totals.get("birdnet_success_count") or 0),
+            "failure_count_total": int(totals.get("birdnet_failure_count") or 0),
+            "reasons": reasons,
+        }
+
+    def _build_statistics(self) -> dict[str, object]:
+        totals = (self.metrics_summary.get("totals") or {})
+        daily_rows = list(self.metrics_summary.get("daily") or [])
+        return {
+            "hours_recorded_total": hours_from_seconds(totals.get("recorded_seconds")),
+            "hours_successfully_analyzed_total": hours_from_seconds(totals.get("analyzed_seconds")),
+            "microphone_uptime_hours_total": hours_from_seconds(totals.get("microphone_uptime_seconds")),
+            "detections_total": int(totals.get("detection_count") or 0),
+            "detections_per_day": [
+                {
+                    "date_utc": row.get("date_utc"),
+                    "detection_count": int(row.get("detection_count") or 0),
+                    "hours_recorded": hours_from_seconds(row.get("recorded_seconds")),
+                    "hours_successfully_analyzed": hours_from_seconds(row.get("analyzed_seconds")),
+                    "microphone_uptime_hours": hours_from_seconds(row.get("microphone_uptime_seconds")),
+                }
+                for row in daily_rows
+            ],
+        }
+
     def _maybe_write_status(self, *, recording: bool, message: str) -> None:
         now = time.monotonic()
         if (now - self.last_status_write) < self.config.write_status_interval_seconds:
@@ -608,7 +872,18 @@ class BirdNodeService:
         self.last_status_write = now
 
     def _write_status(self, *, started: bool = True, recording: bool, message: str) -> None:
+        self._flush_pending_metrics()
         runtime_details = dict(getattr(self.classifier, "runtime_details", {}) or {})
+        system_health = disk_usage_summary(
+            self.config.data_dir,
+            low_space_bytes=self.config.low_disk_free_bytes,
+        )
+        system_health.update(
+            {
+                "cpu_temperature_celsius": read_cpu_temperature_celsius(),
+                "uptime_seconds": round(time.monotonic() - self.service_started_monotonic, 3),
+            }
+        )
         self.storage.write_status(
             {
                 "app": {
@@ -637,5 +912,11 @@ class BirdNodeService:
                     "updated_at": utc_iso(datetime.utcnow()),
                     "runtime_details": runtime_details,
                 },
+                "health": {
+                    "microphone": self._build_microphone_health(),
+                    "birdnet": self._build_birdnet_health(runtime_details),
+                    "system": system_health,
+                },
+                "statistics": self._build_statistics(),
             }
         )

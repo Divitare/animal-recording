@@ -54,6 +54,11 @@ class BirdNodeConfig:
     rolling_audio_buffer_seconds: int
     detection_clip_padding_seconds: float
     write_status_interval_seconds: float
+    clipping_peak_threshold: float
+    silence_rms_threshold: float
+    silence_alert_seconds: float
+    low_disk_free_bytes: int
+    status_history_days: int
     location_name: str | None
     latitude: float | None
     longitude: float | None
@@ -101,6 +106,11 @@ def load_config() -> BirdNodeConfig:
         rolling_audio_buffer_seconds=_env_int("BIRD_MONITOR_AUDIO_BUFFER_SECONDS", 120),
         detection_clip_padding_seconds=_env_float("BIRD_MONITOR_DETECTION_CLIP_PADDING_SECONDS", 0.4),
         write_status_interval_seconds=_env_float("BIRD_MONITOR_STATUS_WRITE_INTERVAL_SECONDS", 2.0),
+        clipping_peak_threshold=_env_float("BIRD_MONITOR_CLIPPING_PEAK_THRESHOLD", 0.98),
+        silence_rms_threshold=_env_float("BIRD_MONITOR_SILENCE_RMS_THRESHOLD", 0.003),
+        silence_alert_seconds=_env_float("BIRD_MONITOR_SILENCE_ALERT_SECONDS", 30.0),
+        low_disk_free_bytes=_env_int("BIRD_MONITOR_LOW_DISK_FREE_BYTES", 2147483648),
+        status_history_days=_env_int("BIRD_MONITOR_STATUS_HISTORY_DAYS", 14),
         location_name=os.getenv("BIRD_MONITOR_LOCATION_NAME", "").strip() or None,
         latitude=_env_optional_float("BIRD_MONITOR_LATITUDE"),
         longitude=_env_optional_float("BIRD_MONITOR_LONGITUDE"),
