@@ -1,48 +1,56 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="bird-monitor"
-SERVICE_NAME="bird-monitor"
-SERVICE_USER="birdmonitor"
+INSTALLER_NAME="bird-install"
 REPO_URL="https://github.com/Divitare/animal-recording.git"
-INSTALL_ROOT="${INSTALL_ROOT:-/opt/bird-monitor}"
-CURRENT_DIR="${INSTALL_ROOT}/current"
-VENV_DIR="${INSTALL_ROOT}/.venv"
-DATA_DIR="${DATA_DIR:-/var/lib/bird-monitor}"
-LOG_DIR="${LOG_DIR:-/var/log/bird-monitor}"
-ENV_FILE="${ENV_FILE:-/etc/bird-monitor.env}"
-SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
-PID_FILE="${DATA_DIR}/${SERVICE_NAME}.pid"
-RUN_MODE_FILE="${INSTALL_ROOT}/.run-mode"
-COMMIT_FILE="${INSTALL_ROOT}/installed-commit.txt"
-RELEASE_COMMIT_FILE="${CURRENT_DIR}/.release-commit"
-REQUIREMENTS_HASH_FILE="${INSTALL_ROOT}/.requirements.sha256"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VARIANT_STATE_FILE="${VARIANT_STATE_FILE:-/etc/bird-install-variant}"
 ACTION="${1:-auto}"
 PACKAGE_MANAGER=""
 PYTHON_BIN=""
 SOURCE_DIR=""
 SOURCE_IS_TEMP="false"
 VENV_REBUILT="false"
-INSTALL_LOG_DIR="${TMPDIR:-/tmp}/${APP_NAME}-logs"
+INSTALL_LOG_DIR="${TMPDIR:-/tmp}/${INSTALLER_NAME}-logs"
 INSTALL_LOG_FILE=""
 CURRENT_STAGE="startup"
 SUMMARY_PRINTED="false"
+
+INSTALL_VARIANT=""
+APP_NAME=""
+SERVICE_NAME=""
+SERVICE_USER=""
+INSTALL_ROOT=""
+CURRENT_DIR=""
+VENV_DIR=""
+DATA_DIR=""
+LOG_DIR=""
+ENV_FILE=""
+SYSTEMD_UNIT=""
+PID_FILE=""
+RUN_MODE_FILE=""
+COMMIT_FILE=""
+RELEASE_COMMIT_FILE=""
+REQUIREMENTS_HASH_FILE=""
+SOURCE_SUBDIR=""
+DEFAULT_PORT=""
+VERIFY_SPECIES_RUNTIME="false"
+INITIALIZE_APP_DATABASE="false"
+
 declare -a WARNING_LOG=()
 declare -a ERROR_LOG=()
 
 log() {
-  printf '[%s] %s\n' "${APP_NAME}" "$*"
+  printf '[%s] %s\n' "${INSTALLER_NAME}" "$*"
 }
 
 warn() {
   WARNING_LOG+=("$*")
-  printf '[%s] warning: %s\n' "${APP_NAME}" "$*" >&2
+  printf '[%s] warning: %s\n' "${INSTALLER_NAME}" "$*" >&2
 }
 
 die() {
   ERROR_LOG+=("$*")
-  printf '[%s] error: %s\n' "${APP_NAME}" "$*" >&2
+  printf '[%s] error: %s\n' "${INSTALLER_NAME}" "$*" >&2
   exit 1
 }
 
@@ -52,7 +60,7 @@ prepare_run_logging() {
   fi
 
   mkdir -p "${INSTALL_LOG_DIR}"
-  INSTALL_LOG_FILE="${INSTALL_LOG_DIR}/${APP_NAME}-$(date +%Y%m%dT%H%M%S).log"
+  INSTALL_LOG_FILE="${INSTALL_LOG_DIR}/${INSTALLER_NAME}-$(date +%Y%m%dT%H%M%S).log"
   touch "${INSTALL_LOG_FILE}"
   chmod 600 "${INSTALL_LOG_FILE}" || true
   exec > >(tee -a "${INSTALL_LOG_FILE}") 2>&1
@@ -72,25 +80,26 @@ print_summary() {
 
   SUMMARY_PRINTED="true"
 
-  printf '\n[%s] ----- installation summary -----\n' "${APP_NAME}"
+  printf '\n[%s] ----- installation summary -----\n' "${INSTALLER_NAME}"
   if [[ "${exit_code}" -eq 0 ]]; then
-    printf '[%s] result: success\n' "${APP_NAME}"
+    printf '[%s] result: success\n' "${INSTALLER_NAME}"
   else
-    printf '[%s] result: failed\n' "${APP_NAME}"
+    printf '[%s] result: failed\n' "${INSTALLER_NAME}"
   fi
-  printf '[%s] action: %s\n' "${APP_NAME}" "${ACTION}"
-  printf '[%s] stage: %s\n' "${APP_NAME}" "${CURRENT_STAGE}"
+  printf '[%s] action: %s\n' "${INSTALLER_NAME}" "${ACTION}"
+  printf '[%s] variant: %s\n' "${INSTALLER_NAME}" "${INSTALL_VARIANT:-unknown}"
+  printf '[%s] stage: %s\n' "${INSTALLER_NAME}" "${CURRENT_STAGE}"
   if [[ -n "${INSTALL_LOG_FILE}" ]]; then
-    printf '[%s] log file: %s\n' "${APP_NAME}" "${INSTALL_LOG_FILE}"
+    printf '[%s] log file: %s\n' "${INSTALLER_NAME}" "${INSTALL_LOG_FILE}"
   fi
   if [[ "${#WARNING_LOG[@]}" -gt 0 ]]; then
-    printf '[%s] warnings:\n' "${APP_NAME}"
+    printf '[%s] warnings:\n' "${INSTALLER_NAME}"
     for item in "${WARNING_LOG[@]}"; do
       printf '  - %s\n' "${item}"
     done
   fi
   if [[ "${#ERROR_LOG[@]}" -gt 0 ]]; then
-    printf '[%s] errors:\n' "${APP_NAME}"
+    printf '[%s] errors:\n' "${INSTALLER_NAME}"
     for item in "${ERROR_LOG[@]}"; do
       printf '  - %s\n' "${item}"
     done
@@ -142,6 +151,143 @@ import sys
 
 print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
 PY
+}
+
+escape_sed_replacement() {
+  printf '%s' "$1" | sed -e 's/[&|]/\\&/g'
+}
+
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local file="$3"
+  local escaped_value
+  escaped_value="$(escape_sed_replacement "${value}")"
+
+  if grep -q "^${key}=" "${file}" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${escaped_value}|" "${file}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+  fi
+}
+
+read_env_value() {
+  local key="$1"
+  local file="$2"
+  grep "^${key}=" "${file}" | tail -n1 | cut -d= -f2-
+}
+
+variant_label() {
+  case "$1" in
+    v1) echo "v1 legacy single-node app" ;;
+    v2-bird-node) echo "v2 bird-node" ;;
+    v2-bird-hub) echo "v2 bird-hub" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+configure_variant() {
+  INSTALL_VARIANT="$1"
+  case "${INSTALL_VARIANT}" in
+    v1)
+      APP_NAME="bird-monitor"
+      SERVICE_NAME="bird-monitor"
+      SERVICE_USER="birdmonitor"
+      INSTALL_ROOT="${INSTALL_ROOT:-/opt/bird-monitor}"
+      DATA_DIR="${DATA_DIR:-/var/lib/bird-monitor}"
+      LOG_DIR="${LOG_DIR:-/var/log/bird-monitor}"
+      ENV_FILE="${ENV_FILE:-/etc/bird-monitor.env}"
+      SOURCE_SUBDIR="v1"
+      DEFAULT_PORT="8080"
+      VERIFY_SPECIES_RUNTIME="true"
+      INITIALIZE_APP_DATABASE="true"
+      ;;
+    v2-bird-node)
+      APP_NAME="bird-node"
+      SERVICE_NAME="bird-node"
+      SERVICE_USER="birdnode"
+      INSTALL_ROOT="${INSTALL_ROOT:-/opt/bird-node}"
+      DATA_DIR="${DATA_DIR:-/var/lib/bird-node}"
+      LOG_DIR="${LOG_DIR:-/var/log/bird-node}"
+      ENV_FILE="${ENV_FILE:-/etc/bird-node.env}"
+      SOURCE_SUBDIR="v2/bird-node"
+      DEFAULT_PORT="8081"
+      VERIFY_SPECIES_RUNTIME="false"
+      INITIALIZE_APP_DATABASE="false"
+      ;;
+    v2-bird-hub)
+      APP_NAME="bird-hub"
+      SERVICE_NAME="bird-hub"
+      SERVICE_USER="birdhub"
+      INSTALL_ROOT="${INSTALL_ROOT:-/opt/bird-hub}"
+      DATA_DIR="${DATA_DIR:-/var/lib/bird-hub}"
+      LOG_DIR="${LOG_DIR:-/var/log/bird-hub}"
+      ENV_FILE="${ENV_FILE:-/etc/bird-hub.env}"
+      SOURCE_SUBDIR="v2/bird-hub"
+      DEFAULT_PORT="8080"
+      VERIFY_SPECIES_RUNTIME="false"
+      INITIALIZE_APP_DATABASE="false"
+      ;;
+    *)
+      die "Unknown install variant: ${INSTALL_VARIANT}"
+      ;;
+  esac
+
+  CURRENT_DIR="${INSTALL_ROOT}/current"
+  VENV_DIR="${INSTALL_ROOT}/.venv"
+  SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
+  PID_FILE="${DATA_DIR}/${SERVICE_NAME}.pid"
+  RUN_MODE_FILE="${INSTALL_ROOT}/.run-mode"
+  COMMIT_FILE="${INSTALL_ROOT}/installed-commit.txt"
+  RELEASE_COMMIT_FILE="${CURRENT_DIR}/.release-commit"
+  REQUIREMENTS_HASH_FILE="${INSTALL_ROOT}/.requirements.sha256"
+}
+
+detect_installed_variant() {
+  local candidates=()
+  local known_variant=""
+
+  if [[ -f "${VARIANT_STATE_FILE}" ]]; then
+    known_variant="$(tr -d '[:space:]' < "${VARIANT_STATE_FILE}")"
+    case "${known_variant}" in
+      v1|v2-bird-node|v2-bird-hub)
+        printf '%s\n' "${known_variant}"
+        return
+        ;;
+      *)
+        warn "Ignoring unknown installed variant marker: ${known_variant}"
+        ;;
+    esac
+  fi
+
+  if [[ -d /opt/bird-monitor/current || -f /etc/bird-monitor.env || -f /etc/systemd/system/bird-monitor.service ]]; then
+    candidates+=("v1")
+  fi
+  if [[ -d /opt/bird-node/current || -f /etc/bird-node.env || -f /etc/systemd/system/bird-node.service ]]; then
+    candidates+=("v2-bird-node")
+  fi
+  if [[ -d /opt/bird-hub/current || -f /etc/bird-hub.env || -f /etc/systemd/system/bird-hub.service ]]; then
+    candidates+=("v2-bird-hub")
+  fi
+
+  if [[ "${#candidates[@]}" -gt 1 ]]; then
+    die "Multiple installed variants were detected (${candidates[*]}). Keep only one install on this machine or set ${VARIANT_STATE_FILE} to the intended variant."
+  fi
+
+  if [[ "${#candidates[@]}" -eq 1 ]]; then
+    printf '%s\n' "${candidates[0]}"
+  fi
+}
+
+write_variant_state() {
+  printf '%s\n' "${INSTALL_VARIANT}" > "${VARIANT_STATE_FILE}"
+  chmod 644 "${VARIANT_STATE_FILE}" || true
+}
+
+remove_variant_state() {
+  if [[ -f "${VARIANT_STATE_FILE}" ]]; then
+    rm -f "${VARIANT_STATE_FILE}"
+  fi
 }
 
 require_root() {
@@ -254,13 +400,17 @@ PY
 
 ensure_env_file() {
   set_stage "Ensuring environment configuration"
+  local existing_host=""
+  local existing_port=""
   mkdir -p "$(dirname "${ENV_FILE}")"
   if [[ ! -f "${ENV_FILE}" ]]; then
     log "Creating ${ENV_FILE}."
     cat > "${ENV_FILE}" <<EOF
 BIRD_MONITOR_SECRET_KEY=$(generate_secret)
+BIRD_MONITOR_APP_VARIANT=${INSTALL_VARIANT}
+BIRD_MONITOR_APP_COMMIT=
 BIRD_MONITOR_HOST=0.0.0.0
-BIRD_MONITOR_PORT=8080
+BIRD_MONITOR_PORT=${DEFAULT_PORT}
 BIRD_MONITOR_DATA_DIR=${DATA_DIR}
 BIRD_MONITOR_LOG_DIR=${LOG_DIR}
 BIRD_MONITOR_DEVICE_NAME=
@@ -278,10 +428,16 @@ BIRD_MONITOR_SPECIES_MIN_CONFIDENCE=0.35
 EOF
   fi
 
-  grep -q '^BIRD_MONITOR_DATA_DIR=' "${ENV_FILE}" || echo "BIRD_MONITOR_DATA_DIR=${DATA_DIR}" >> "${ENV_FILE}"
-  grep -q '^BIRD_MONITOR_LOG_DIR=' "${ENV_FILE}" || echo "BIRD_MONITOR_LOG_DIR=${LOG_DIR}" >> "${ENV_FILE}"
-  grep -q '^BIRD_MONITOR_HOST=' "${ENV_FILE}" || echo "BIRD_MONITOR_HOST=0.0.0.0" >> "${ENV_FILE}"
-  grep -q '^BIRD_MONITOR_PORT=' "${ENV_FILE}" || echo "BIRD_MONITOR_PORT=8080" >> "${ENV_FILE}"
+  existing_host="$(read_env_value 'BIRD_MONITOR_HOST' "${ENV_FILE}" 2>/dev/null || true)"
+  existing_port="$(read_env_value 'BIRD_MONITOR_PORT' "${ENV_FILE}" 2>/dev/null || true)"
+
+  set_env_value "BIRD_MONITOR_APP_VARIANT" "${INSTALL_VARIANT}" "${ENV_FILE}"
+  set_env_value "BIRD_MONITOR_HOST" "${existing_host:-0.0.0.0}" "${ENV_FILE}"
+  set_env_value "BIRD_MONITOR_PORT" "${existing_port:-${DEFAULT_PORT}}" "${ENV_FILE}"
+  set_env_value "BIRD_MONITOR_DATA_DIR" "${DATA_DIR}" "${ENV_FILE}"
+  set_env_value "BIRD_MONITOR_LOG_DIR" "${LOG_DIR}" "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_DEVICE_NAME=' "${ENV_FILE}" || echo "BIRD_MONITOR_DEVICE_NAME=" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_DEVICE_INDEX=' "${ENV_FILE}" || echo "BIRD_MONITOR_DEVICE_INDEX=" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_SAMPLE_RATE=' "${ENV_FILE}" || echo "BIRD_MONITOR_SAMPLE_RATE=32000" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_CHANNELS=' "${ENV_FILE}" || echo "BIRD_MONITOR_CHANNELS=1" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_SEGMENT_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SEGMENT_SECONDS=30" >> "${ENV_FILE}"
@@ -295,6 +451,20 @@ EOF
 
   chown "root:${SERVICE_USER}" "${ENV_FILE}"
   chmod 640 "${ENV_FILE}"
+}
+
+select_install_variant() {
+  printf 'No existing installation was detected.\n'
+  printf '1) %s\n' "$(variant_label v1)"
+  printf '2) %s\n' "$(variant_label v2-bird-node)"
+  printf '3) %s\n' "$(variant_label v2-bird-hub)"
+  read -r -p "Choose [1-3]: " choice
+  case "${choice}" in
+    1) INSTALL_VARIANT="v1" ;;
+    2) INSTALL_VARIANT="v2-bird-node" ;;
+    3) INSTALL_VARIANT="v2-bird-hub" ;;
+    *) die "Unknown option." ;;
+  esac
 }
 
 prepare_source_checkout() {
@@ -317,8 +487,17 @@ cleanup_source_checkout() {
 
 sync_source() {
   set_stage "Copying application files into ${CURRENT_DIR}"
+  local source_variant_dir=""
+  local source_commit=""
+  local previous_commit=""
+
   if [[ -z "${SOURCE_DIR}" ]] || [[ ! -d "${SOURCE_DIR}" ]]; then
     die "No downloaded source tree is available."
+  fi
+
+  source_variant_dir="${SOURCE_DIR}/${SOURCE_SUBDIR}"
+  if [[ ! -d "${source_variant_dir}" ]]; then
+    die "The downloaded source does not contain ${SOURCE_SUBDIR}."
   fi
 
   mkdir -p "${CURRENT_DIR}"
@@ -329,29 +508,30 @@ sync_source() {
     --exclude '.venv' \
     --exclude '__pycache__' \
     --exclude '.pytest_cache' \
-    "${SOURCE_DIR}/" "${CURRENT_DIR}/"
+    "${source_variant_dir}/" "${CURRENT_DIR}/"
 
-  chmod +x "${CURRENT_DIR}/install.sh" "${CURRENT_DIR}/run_server.sh"
-  if [[ -d "${SOURCE_DIR}/.git" ]]; then
-    local previous_commit=""
-    local source_commit=""
-    mkdir -p "${CURRENT_DIR}/.git"
-    rsync -a --delete "${SOURCE_DIR}/.git/" "${CURRENT_DIR}/.git/"
-    previous_commit="$(cat "${COMMIT_FILE}" 2>/dev/null || true)"
-    source_commit="$(git -C "${SOURCE_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
-    if [[ -n "${source_commit}" ]]; then
-      printf '%s\n' "${source_commit}" > "${COMMIT_FILE}"
-      printf '%s\n' "${source_commit}" > "${RELEASE_COMMIT_FILE}"
-      if [[ -n "${previous_commit}" && "${previous_commit}" == "${source_commit}" ]]; then
-        log "Downloaded source commit matches the currently installed commit: ${source_commit}"
-      elif [[ -n "${previous_commit}" ]]; then
-        log "Updating installed commit from ${previous_commit} to ${source_commit}"
-      fi
-      log "Downloaded source commit: ${source_commit}"
-    fi
-    chmod 644 "${COMMIT_FILE}" 2>/dev/null || true
-    chmod 644 "${RELEASE_COMMIT_FILE}" 2>/dev/null || true
+  cp "${SOURCE_DIR}/install.sh" "${CURRENT_DIR}/install.sh"
+  chmod +x "${CURRENT_DIR}/install.sh"
+  if [[ -f "${CURRENT_DIR}/run_server.sh" ]]; then
+    chmod +x "${CURRENT_DIR}/run_server.sh"
   fi
+
+  previous_commit="$(cat "${COMMIT_FILE}" 2>/dev/null || true)"
+  source_commit="$(git -C "${SOURCE_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+  if [[ -n "${source_commit}" ]]; then
+    printf '%s\n' "${source_commit}" > "${COMMIT_FILE}"
+    printf '%s\n' "${source_commit}" > "${RELEASE_COMMIT_FILE}"
+    set_env_value "BIRD_MONITOR_APP_COMMIT" "${source_commit}" "${ENV_FILE}"
+    if [[ -n "${previous_commit}" && "${previous_commit}" == "${source_commit}" ]]; then
+      log "Downloaded source commit matches the currently installed commit: ${source_commit}"
+    elif [[ -n "${previous_commit}" ]]; then
+      log "Updating installed commit from ${previous_commit} to ${source_commit}"
+    fi
+    log "Downloaded source commit: ${source_commit}"
+  fi
+
+  chmod 644 "${COMMIT_FILE}" 2>/dev/null || true
+  chmod 644 "${RELEASE_COMMIT_FILE}" 2>/dev/null || true
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}"
 }
 
@@ -378,29 +558,11 @@ ensure_virtualenv() {
   VENV_REBUILT="true"
 }
 
-sync_python_dependencies() {
-  set_stage "Syncing Python dependencies"
-  local current_requirements_hash=""
-  local installed_requirements_hash=""
-
-  current_requirements_hash="$(hash_file "${CURRENT_DIR}/requirements.txt")"
-  installed_requirements_hash="$(cat "${REQUIREMENTS_HASH_FILE}" 2>/dev/null || true)"
-
-  if [[ "${VENV_REBUILT}" != "true" ]] && [[ "${current_requirements_hash}" == "${installed_requirements_hash}" ]] && [[ -x "${VENV_DIR}/bin/python" && -x "${VENV_DIR}/bin/pip" ]]; then
-    log "requirements.txt is unchanged (${current_requirements_hash}); reusing installed core Python packages."
-  else
-    log "Installing core Python packages from requirements.txt."
-    "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
-    "${VENV_DIR}/bin/pip" install -r "${CURRENT_DIR}/requirements.txt"
-    printf '%s\n' "${current_requirements_hash}" > "${REQUIREMENTS_HASH_FILE}"
-    chmod 644 "${REQUIREMENTS_HASH_FILE}" 2>/dev/null || true
+install_species_runtime() {
+  if [[ "${VERIFY_SPECIES_RUNTIME}" != "true" ]]; then
+    return
   fi
 
-  install_species_runtime
-  verify_species_runtime
-}
-
-install_species_runtime() {
   set_stage "Installing optional BirdNET runtime dependencies"
   if "${VENV_DIR}/bin/python" -c "import birdnetlib, librosa, resampy" >/dev/null 2>&1; then
     log "BirdNET Python packages are available."
@@ -432,9 +594,13 @@ install_species_runtime() {
 }
 
 verify_species_runtime() {
-  set_stage "Verifying BirdNET species runtime"
   local verify_output=""
 
+  if [[ "${VERIFY_SPECIES_RUNTIME}" != "true" ]]; then
+    return
+  fi
+
+  set_stage "Verifying BirdNET species runtime"
   if verify_output="$(
     cd "${CURRENT_DIR}" && "${VENV_DIR}/bin/python" - <<'PY'
 from bird_monitor.species import build_species_classifier
@@ -449,7 +615,7 @@ details = getattr(classifier, "runtime_details", {}) or {}
 if details:
     print(f"runtime_backend={details.get('runtime_backend', 'unknown')}")
     print(f"analysis_mode={details.get('analysis_mode', 'unknown')}")
-    for name, version in sorted((details.get("packages") or {}).items()):
+    for name, version in sorted((details.get('packages') or {}).items()):
         print(f"package_{name}={version or 'missing'}")
 
 raise SystemExit(0 if classifier.available() else 1)
@@ -466,7 +632,33 @@ PY
   die "BirdNET verification did not pass. Installation stopped so the system does not start without working species detection."
 }
 
-initialize_database() {
+sync_python_dependencies() {
+  set_stage "Syncing Python dependencies"
+  local current_requirements_hash=""
+  local installed_requirements_hash=""
+
+  current_requirements_hash="$(hash_file "${CURRENT_DIR}/requirements.txt")"
+  installed_requirements_hash="$(cat "${REQUIREMENTS_HASH_FILE}" 2>/dev/null || true)"
+
+  if [[ "${VENV_REBUILT}" != "true" ]] && [[ "${current_requirements_hash}" == "${installed_requirements_hash}" ]] && [[ -x "${VENV_DIR}/bin/python" && -x "${VENV_DIR}/bin/pip" ]]; then
+    log "requirements.txt is unchanged (${current_requirements_hash}); reusing installed core Python packages."
+  else
+    log "Installing core Python packages from requirements.txt."
+    "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
+    "${VENV_DIR}/bin/pip" install -r "${CURRENT_DIR}/requirements.txt"
+    printf '%s\n' "${current_requirements_hash}" > "${REQUIREMENTS_HASH_FILE}"
+    chmod 644 "${REQUIREMENTS_HASH_FILE}" 2>/dev/null || true
+  fi
+
+  install_species_runtime
+  verify_species_runtime
+}
+
+initialize_application() {
+  if [[ "${INITIALIZE_APP_DATABASE}" != "true" ]]; then
+    return
+  fi
+
   set_stage "Initializing application database"
   su -s /bin/bash -c "cd '${CURRENT_DIR}' && set -a && source '${ENV_FILE}' && set +a && BIRD_MONITOR_DISABLE_RECORDER=true '${VENV_DIR}/bin/python' -c \"from bird_monitor.app import create_app; create_app()\"" "${SERVICE_USER}"
   repair_runtime_permissions
@@ -478,11 +670,27 @@ has_systemd() {
 
 write_systemd_unit() {
   set_stage "Installing systemd service unit"
-  sed \
-    -e "s|__SERVICE_USER__|${SERVICE_USER}|g" \
-    -e "s|__INSTALL_ROOT__|${INSTALL_ROOT}|g" \
-    -e "s|__ENV_FILE__|${ENV_FILE}|g" \
-    "${CURRENT_DIR}/deploy/bird-monitor.service" > "${SYSTEMD_UNIT}"
+  cat > "${SYSTEMD_UNIT}" <<EOF
+[Unit]
+Description=$(variant_label "${INSTALL_VARIANT}")
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${CURRENT_DIR}
+EnvironmentFile=-${ENV_FILE}
+ExecStart=${CURRENT_DIR}/run_server.sh
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
   chmod 644 "${SYSTEMD_UNIT}"
 }
 
@@ -518,17 +726,11 @@ start_service() {
   su -s /bin/bash -c "cd '${CURRENT_DIR}' && set -a && source '${ENV_FILE}' && set +a && nohup ./run_server.sh >> '${LOG_DIR}/server.log' 2>&1 & echo \$! > '${PID_FILE}'" "${SERVICE_USER}"
 }
 
-read_env_value() {
-  local key="$1"
-  local file="$2"
-  grep "^${key}=" "${file}" | tail -n1 | cut -d= -f2-
-}
-
 verify_running_service() {
   set_stage "Verifying running service version"
   local port expected_commit response actual_commit attempt
   port="$(read_env_value 'BIRD_MONITOR_PORT' "${ENV_FILE}")"
-  port="${port:-8080}"
+  port="${port:-${DEFAULT_PORT}}"
   expected_commit="$(cat "${RELEASE_COMMIT_FILE}" 2>/dev/null || true)"
 
   for attempt in $(seq 1 25); do
@@ -546,13 +748,13 @@ verify_running_service() {
   done
 
   if [[ -n "${expected_commit}" ]]; then
-    die "The server did not come up on the expected commit ${expected_commit}. Check the installer log, systemctl status ${SERVICE_NAME}, and the Bird Monitor logs."
+    die "The server did not come up on the expected commit ${expected_commit}. Check the installer log, systemctl status ${SERVICE_NAME}, and the service logs."
   fi
   die "The server did not respond successfully on http://127.0.0.1:${port}/api/status after installation."
 }
 
 confirm_uninstall() {
-  printf 'This will permanently remove the server, recordings, exports, logs, config, and service user.\n'
+  printf 'This will permanently remove the installed variant, its recordings or data, logs, config, and service user.\n'
   read -r -p "Type DELETE to continue: " confirmation
   [[ "${confirmation}" == "DELETE" ]] || die "Uninstall cancelled."
 }
@@ -564,7 +766,7 @@ remove_service_user() {
 }
 
 uninstall_everything() {
-  set_stage "Removing Bird Monitor installation"
+  set_stage "Removing installed variant"
   confirm_uninstall
   stop_process_if_running
 
@@ -577,46 +779,58 @@ uninstall_everything() {
   rm -rf "${INSTALL_ROOT}" "${DATA_DIR}" "${LOG_DIR}"
   rm -f "${ENV_FILE}"
   remove_service_user
-  log "Bird Monitor has been completely removed."
-}
-
-existing_installation() {
-  [[ -d "${INSTALL_ROOT}" || -f "${ENV_FILE}" || -f "${SYSTEMD_UNIT}" ]]
+  remove_variant_state
+  log "$(variant_label "${INSTALL_VARIANT}") has been completely removed."
 }
 
 choose_action_if_needed() {
-  if [[ "${ACTION}" != "auto" ]]; then
-    return
-  fi
+  local detected_variant=""
 
-  if ! existing_installation; then
-    ACTION="install"
-    return
-  fi
-
-  printf 'An existing Bird Monitor installation was detected.\n'
-  printf '1) Update existing installation\n'
-  printf '2) Completely uninstall\n'
-  printf '3) Exit\n'
-  read -r -p "Choose [1-3]: " choice
-  case "${choice}" in
-    1) ACTION="update" ;;
-    2) ACTION="uninstall" ;;
-    3) ACTION="exit" ;;
-    *) die "Unknown option." ;;
+  case "${ACTION}" in
+    auto|install|update|uninstall)
+      ;;
+    *)
+      die "Usage: $0 [install|update|uninstall]"
+      ;;
   esac
+
+  detected_variant="$(detect_installed_variant || true)"
+
+  if [[ "${ACTION}" == "uninstall" ]]; then
+    [[ -n "${detected_variant}" ]] || die "No installed variant was detected to uninstall."
+    configure_variant "${detected_variant}"
+    return
+  fi
+
+  if [[ -n "${detected_variant}" ]]; then
+    configure_variant "${detected_variant}"
+    if [[ "${ACTION}" == "install" ]]; then
+      log "Detected existing $(variant_label "${INSTALL_VARIANT}") installation. Running an update instead."
+      ACTION="update"
+    elif [[ "${ACTION}" == "auto" ]]; then
+      ACTION="update"
+    fi
+    log "Detected installed variant: $(variant_label "${INSTALL_VARIANT}")"
+    return
+  fi
+
+  ACTION="install"
+  select_install_variant
+  configure_variant "${INSTALL_VARIANT}"
+  log "Selected install variant: $(variant_label "${INSTALL_VARIANT}")"
 }
 
 show_post_install_notes() {
   set_stage "Finalizing installation"
   local port
-  port="$(grep '^BIRD_MONITOR_PORT=' "${ENV_FILE}" | tail -n1 | cut -d= -f2-)"
-  log "Server is up. Open http://$(hostname -f 2>/dev/null || hostname):${port:-8080}"
+  port="$(read_env_value 'BIRD_MONITOR_PORT' "${ENV_FILE}")"
+  log "Installed variant: $(variant_label "${INSTALL_VARIANT}")"
+  log "Server is up. Open http://$(hostname -f 2>/dev/null || hostname):${port:-${DEFAULT_PORT}}"
   if [[ -f "${COMMIT_FILE}" ]]; then
     log "Installed commit: $(cat "${COMMIT_FILE}")"
   fi
-  log "Open /settings in the web interface to configure the microphone, BirdNET species analysis, and recording schedules."
-  log "Re-running install.sh will now download the latest code directly from ${REPO_URL} for updates."
+  log "Run this same command again later to update the installed variant automatically:"
+  log "curl -fsSL https://raw.githubusercontent.com/Divitare/animal-recording/main/install.sh | sudo bash"
   if [[ -f "${RUN_MODE_FILE}" ]] && [[ "$(cat "${RUN_MODE_FILE}")" == "nohup" ]]; then
     log "Logs are being written to ${LOG_DIR}/server.log"
   else
@@ -645,9 +859,10 @@ perform_install_or_update() {
   sync_python_dependencies
   set_stage "Repairing runtime permissions"
   repair_runtime_permissions
-  initialize_database
+  initialize_application
   start_service
   verify_running_service
+  write_variant_state
   show_post_install_notes
 }
 
@@ -658,14 +873,11 @@ main() {
   choose_action_if_needed
 
   case "${ACTION}" in
-    auto|install|update)
+    install|update)
       perform_install_or_update
       ;;
     uninstall)
       uninstall_everything
-      ;;
-    exit)
-      log "Nothing changed."
       ;;
     *)
       die "Usage: $0 [install|update|uninstall]"
