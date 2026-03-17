@@ -21,6 +21,7 @@ class BirdNodeStorage:
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS detections (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
                     node_id TEXT NOT NULL,
                     species_common_name TEXT NOT NULL,
                     species_scientific_name TEXT,
@@ -39,10 +40,19 @@ class BirdNodeStorage:
                     longitude REAL,
                     created_at TEXT NOT NULL
                 );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id ON detections(event_id);
                 CREATE INDEX IF NOT EXISTS idx_detections_started_at ON detections(started_at);
                 CREATE INDEX IF NOT EXISTS idx_detections_species ON detections(species_common_name);
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(detections)")
+            }
+            if "event_id" not in columns:
+                connection.execute("ALTER TABLE detections ADD COLUMN event_id TEXT")
+                connection.execute("UPDATE detections SET event_id = 'legacy-' || id WHERE event_id IS NULL")
+                connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id ON detections(event_id)")
 
     def record_detection(self, payload: dict[str, Any]) -> int:
         with self._lock:
@@ -50,6 +60,7 @@ class BirdNodeStorage:
                 cursor = connection.execute(
                     """
                     INSERT INTO detections (
+                        event_id,
                         node_id,
                         species_common_name,
                         species_scientific_name,
@@ -67,9 +78,10 @@ class BirdNodeStorage:
                         latitude,
                         longitude,
                         created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        payload["event_id"],
                         payload["node_id"],
                         payload["species_common_name"],
                         payload.get("species_scientific_name"),

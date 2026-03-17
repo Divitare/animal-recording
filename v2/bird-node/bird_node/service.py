@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -215,6 +216,7 @@ class BirdNodeService:
         self.current_device_name: str | None = None
         self.last_detection_species: list[str] = []
         self.last_detection_at: datetime | None = None
+        self.last_event_id: str | None = None
         self.last_status_write = 0.0
 
     def run_forever(self) -> None:
@@ -439,8 +441,10 @@ class BirdNodeService:
         for detection in self._merge_session_detections(result.detections):
             if self._is_duplicate_detection(detection):
                 continue
+            event_id = f"evt-{uuid.uuid4().hex}"
             clip_path, clip_duration = self._save_detection_clip(
                 detection,
+                event_id=event_id,
                 rolling_buffer=rolling_buffer,
                 stream_started_at=stream_started_at,
             )
@@ -449,11 +453,13 @@ class BirdNodeService:
 
             self.total_saved_detections += 1
             self.last_detection_at = detection.ended_at
+            self.last_event_id = event_id
             self.last_detection_species = [detection.species_common_name]
             self.recent_saved_detections.append(detection)
             self._prune_recent_saved_detections()
             record_id = self.storage.record_detection(
                 {
+                    "event_id": event_id,
                     "node_id": self.config.node_id,
                     "species_common_name": detection.species_common_name,
                     "species_scientific_name": detection.species_scientific_name,
@@ -474,10 +480,13 @@ class BirdNodeService:
                 }
             )
             self.logger.info(
-                "Saved bird detection id=%s species=%s confidence=%.3f clip=%s",
+                "Saved bird detection record_id=%s event_id=%s species=%s confidence=%.3f started_at=%s ended_at=%s clip=%s",
                 record_id,
+                event_id,
                 detection.species_common_name,
                 detection.confidence,
+                utc_iso(detection.started_at),
+                utc_iso(detection.ended_at),
                 clip_path,
             )
 
@@ -549,6 +558,7 @@ class BirdNodeService:
         self,
         detection: SessionSpeciesDetection,
         *,
+        event_id: str,
         rolling_buffer: RollingAudioBuffer,
         stream_started_at: datetime,
     ) -> tuple[Path | None, float | None]:
@@ -578,16 +588,16 @@ class BirdNodeService:
             )
             return None, None
 
-        clip_path = self._build_clip_path(detection.started_at, detection.species_common_name)
+        clip_path = self._build_clip_path(detection.started_at, detection.species_common_name, event_id)
         save_audio_samples(clip_samples, self.config.sample_rate, clip_path)
         clip_duration_seconds = float(np.asarray(clip_samples).shape[0] / max(self.config.sample_rate, 1))
         return clip_path, clip_duration_seconds
 
-    def _build_clip_path(self, detected_at: datetime, common_name: str) -> Path:
+    def _build_clip_path(self, detected_at: datetime, common_name: str, event_id: str) -> Path:
         safe_name = "".join(character.lower() if character.isalnum() else "-" for character in common_name).strip("-")
         safe_name = "-".join(part for part in safe_name.split("-") if part) or "bird"
         day_path = self.config.clips_dir / detected_at.strftime("%Y") / detected_at.strftime("%m") / detected_at.strftime("%d")
-        filename = f"detection_{detected_at.strftime('%Y%m%dT%H%M%S_%f')}_{safe_name}.wav"
+        filename = f"detection_{detected_at.strftime('%Y%m%dT%H%M%S_%f')}_{event_id}_{safe_name}.wav"
         return day_path / filename
 
     def _maybe_write_status(self, *, recording: bool, message: str) -> None:
@@ -616,6 +626,7 @@ class BirdNodeService:
                     "last_error": self.last_error,
                     "last_analysis_duration_seconds": self.last_analysis_duration_seconds,
                     "last_detection_at": utc_iso(self.last_detection_at),
+                    "last_event_id": self.last_event_id,
                     "last_detected_species": self.last_detection_species,
                     "pending_windows": len(self.pending_windows),
                     "saved_detection_count": self.total_saved_detections,
