@@ -1,5 +1,11 @@
 # V2 Bird Node
 
-This is the new `bird-node` workspace.
+This folder now contains the first real `bird-node` runtime.
 
-It is the future field-node runtime for Raspberry Pi devices. For now it contains a minimal installable scaffold so the root installer can already target the `v2 bird-node` variant.
+Current behavior:
+
+- runs headless without a web interface
+- records continuously from a USB microphone
+- analyzes rolling `9 second` windows every `3 seconds` with BirdNET
+- saves only detected bird clips instead of full continuous recordings
+- writes a local SQLite database and a JSON status file for health reporting

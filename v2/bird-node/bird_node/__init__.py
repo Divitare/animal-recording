@@ -1,1 +1,1 @@
-"""V2 bird-node package."""
+"""Headless bird-node runtime package."""

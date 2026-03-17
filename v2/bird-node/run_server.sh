@@ -6,8 +6,4 @@ INSTALL_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${SCRIPT_DIR}"
 
-exec "${INSTALL_ROOT}/.venv/bin/gunicorn" \
-  --workers 1 \
-  --threads 4 \
-  --bind "${BIRD_MONITOR_HOST:-0.0.0.0}:${BIRD_MONITOR_PORT:-8081}" \
-  "bird_node.app:create_app()"
+exec "${INSTALL_ROOT}/.venv/bin/python" -m bird_node

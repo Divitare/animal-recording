@@ -35,6 +35,8 @@ SOURCE_SUBDIR=""
 DEFAULT_PORT=""
 VERIFY_SPECIES_RUNTIME="false"
 INITIALIZE_APP_DATABASE="false"
+SPECIES_VERIFY_MODULE=""
+STATUS_FILE=""
 
 declare -a WARNING_LOG=()
 declare -a ERROR_LOG=()
@@ -201,6 +203,7 @@ configure_variant() {
       DEFAULT_PORT="8080"
       VERIFY_SPECIES_RUNTIME="true"
       INITIALIZE_APP_DATABASE="true"
+      SPECIES_VERIFY_MODULE="bird_monitor.species"
       ;;
     v2-bird-node)
       APP_NAME="bird-node"
@@ -212,8 +215,9 @@ configure_variant() {
       ENV_FILE="${ENV_FILE:-/etc/bird-node.env}"
       SOURCE_SUBDIR="v2/bird-node"
       DEFAULT_PORT="8081"
-      VERIFY_SPECIES_RUNTIME="false"
+      VERIFY_SPECIES_RUNTIME="true"
       INITIALIZE_APP_DATABASE="false"
+      SPECIES_VERIFY_MODULE="bird_node.species"
       ;;
     v2-bird-hub)
       APP_NAME="bird-hub"
@@ -227,6 +231,7 @@ configure_variant() {
       DEFAULT_PORT="8080"
       VERIFY_SPECIES_RUNTIME="false"
       INITIALIZE_APP_DATABASE="false"
+      SPECIES_VERIFY_MODULE=""
       ;;
     *)
       die "Unknown install variant: ${INSTALL_VARIANT}"
@@ -241,6 +246,7 @@ configure_variant() {
   COMMIT_FILE="${INSTALL_ROOT}/installed-commit.txt"
   RELEASE_COMMIT_FILE="${CURRENT_DIR}/.release-commit"
   REQUIREMENTS_HASH_FILE="${INSTALL_ROOT}/.requirements.sha256"
+  STATUS_FILE="${DATA_DIR}/status.json"
 }
 
 detect_installed_variant() {
@@ -402,7 +408,13 @@ ensure_env_file() {
   set_stage "Ensuring environment configuration"
   local existing_host=""
   local existing_port=""
+  local default_node_id=""
+  local default_sample_rate="32000"
   mkdir -p "$(dirname "${ENV_FILE}")"
+  default_node_id="$(hostname -s 2>/dev/null || hostname)"
+  if [[ "${INSTALL_VARIANT}" == "v2-bird-node" ]]; then
+    default_sample_rate="16000"
+  fi
   if [[ ! -f "${ENV_FILE}" ]]; then
     log "Creating ${ENV_FILE}."
     cat > "${ENV_FILE}" <<EOF
@@ -413,12 +425,20 @@ BIRD_MONITOR_HOST=0.0.0.0
 BIRD_MONITOR_PORT=${DEFAULT_PORT}
 BIRD_MONITOR_DATA_DIR=${DATA_DIR}
 BIRD_MONITOR_LOG_DIR=${LOG_DIR}
+BIRD_MONITOR_STATUS_FILE=${STATUS_FILE}
+BIRD_MONITOR_NODE_ID=${default_node_id}
 BIRD_MONITOR_DEVICE_NAME=
 BIRD_MONITOR_DEVICE_INDEX=
-BIRD_MONITOR_SAMPLE_RATE=32000
+BIRD_MONITOR_SAMPLE_RATE=${default_sample_rate}
 BIRD_MONITOR_CHANNELS=1
 BIRD_MONITOR_SEGMENT_SECONDS=30
 BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=0.2
+BIRD_MONITOR_LIVE_WINDOW_SECONDS=9
+BIRD_MONITOR_LIVE_STEP_SECONDS=3
+BIRD_MONITOR_MINIMUM_LIVE_ANALYSIS_SECONDS=3
+BIRD_MONITOR_AUDIO_BUFFER_SECONDS=120
+BIRD_MONITOR_DETECTION_CLIP_PADDING_SECONDS=0.4
+BIRD_MONITOR_STATUS_WRITE_INTERVAL_SECONDS=2.0
 BIRD_MONITOR_DISABLE_RECORDER=false
 BIRD_MONITOR_LOCATION_NAME=
 BIRD_MONITOR_LATITUDE=
@@ -436,12 +456,20 @@ EOF
   set_env_value "BIRD_MONITOR_PORT" "${existing_port:-${DEFAULT_PORT}}" "${ENV_FILE}"
   set_env_value "BIRD_MONITOR_DATA_DIR" "${DATA_DIR}" "${ENV_FILE}"
   set_env_value "BIRD_MONITOR_LOG_DIR" "${LOG_DIR}" "${ENV_FILE}"
+  set_env_value "BIRD_MONITOR_STATUS_FILE" "${STATUS_FILE}" "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_NODE_ID=' "${ENV_FILE}" || echo "BIRD_MONITOR_NODE_ID=${default_node_id}" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_DEVICE_NAME=' "${ENV_FILE}" || echo "BIRD_MONITOR_DEVICE_NAME=" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_DEVICE_INDEX=' "${ENV_FILE}" || echo "BIRD_MONITOR_DEVICE_INDEX=" >> "${ENV_FILE}"
-  grep -q '^BIRD_MONITOR_SAMPLE_RATE=' "${ENV_FILE}" || echo "BIRD_MONITOR_SAMPLE_RATE=32000" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_SAMPLE_RATE=' "${ENV_FILE}" || echo "BIRD_MONITOR_SAMPLE_RATE=${default_sample_rate}" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_CHANNELS=' "${ENV_FILE}" || echo "BIRD_MONITOR_CHANNELS=1" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_SEGMENT_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SEGMENT_SECONDS=30" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_MIN_EVENT_DURATION_SECONDS=0.2" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_LIVE_WINDOW_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_LIVE_WINDOW_SECONDS=9" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_LIVE_STEP_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_LIVE_STEP_SECONDS=3" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_MINIMUM_LIVE_ANALYSIS_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_MINIMUM_LIVE_ANALYSIS_SECONDS=3" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_AUDIO_BUFFER_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_AUDIO_BUFFER_SECONDS=120" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_DETECTION_CLIP_PADDING_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_DETECTION_CLIP_PADDING_SECONDS=0.4" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_STATUS_WRITE_INTERVAL_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_STATUS_WRITE_INTERVAL_SECONDS=2.0" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_DISABLE_RECORDER=' "${ENV_FILE}" || echo "BIRD_MONITOR_DISABLE_RECORDER=false" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_LOCATION_NAME=' "${ENV_FILE}" || echo "BIRD_MONITOR_LOCATION_NAME=" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_LATITUDE=' "${ENV_FILE}" || echo "BIRD_MONITOR_LATITUDE=" >> "${ENV_FILE}"
@@ -601,9 +629,11 @@ verify_species_runtime() {
   fi
 
   set_stage "Verifying BirdNET species runtime"
+  local import_statement=""
+  import_statement="from ${SPECIES_VERIFY_MODULE} import build_species_classifier"
   if verify_output="$(
-    cd "${CURRENT_DIR}" && "${VENV_DIR}/bin/python" - <<'PY'
-from bird_monitor.species import build_species_classifier
+    cd "${CURRENT_DIR}" && "${VENV_DIR}/bin/python" - <<PY
+${import_statement}
 
 classifier = build_species_classifier()
 print(f"provider={classifier.provider_name}")
@@ -726,7 +756,50 @@ start_service() {
   su -s /bin/bash -c "cd '${CURRENT_DIR}' && set -a && source '${ENV_FILE}' && set +a && nohup ./run_server.sh >> '${LOG_DIR}/server.log' 2>&1 & echo \$! > '${PID_FILE}'" "${SERVICE_USER}"
 }
 
+verify_headless_node_service() {
+  local expected_commit actual_commit started_flag attempt
+  expected_commit="$(cat "${RELEASE_COMMIT_FILE}" 2>/dev/null || true)"
+
+  for attempt in $(seq 1 25); do
+    if [[ -f "${STATUS_FILE}" ]]; then
+      actual_commit="$(
+        STATUS_JSON_PATH="${STATUS_FILE}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(Path(os.environ["STATUS_JSON_PATH"]).read_text(encoding="utf-8"))
+print(((payload.get("app") or {}).get("commit") or "").strip())
+PY
+      )"
+      started_flag="$(
+        STATUS_JSON_PATH="${STATUS_FILE}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(Path(os.environ["STATUS_JSON_PATH"]).read_text(encoding="utf-8"))
+print(str(bool((payload.get("service") or {}).get("started"))))
+PY
+      )"
+      if [[ "${started_flag}" == "True" && ( -z "${expected_commit}" || "${actual_commit}" == "${expected_commit}" ) ]]; then
+        log "Verified headless node status file: ${STATUS_FILE}"
+        return
+      fi
+    fi
+    sleep 2
+  done
+
+  die "The bird-node service did not produce a valid status file at ${STATUS_FILE} after installation."
+}
+
 verify_running_service() {
+  if [[ "${INSTALL_VARIANT}" == "v2-bird-node" ]]; then
+    set_stage "Verifying headless bird-node service"
+    verify_headless_node_service
+    return
+  fi
+
   set_stage "Verifying running service version"
   local port expected_commit response actual_commit attempt
   port="$(read_env_value 'BIRD_MONITOR_PORT' "${ENV_FILE}")"
@@ -825,7 +898,12 @@ show_post_install_notes() {
   local port
   port="$(read_env_value 'BIRD_MONITOR_PORT' "${ENV_FILE}")"
   log "Installed variant: $(variant_label "${INSTALL_VARIANT}")"
-  log "Server is up. Open http://$(hostname -f 2>/dev/null || hostname):${port:-${DEFAULT_PORT}}"
+  if [[ "${INSTALL_VARIANT}" == "v2-bird-node" ]]; then
+    log "bird-node is running headless."
+    log "Status file: ${STATUS_FILE}"
+  else
+    log "Server is up. Open http://$(hostname -f 2>/dev/null || hostname):${port:-${DEFAULT_PORT}}"
+  fi
   if [[ -f "${COMMIT_FILE}" ]]; then
     log "Installed commit: $(cat "${COMMIT_FILE}")"
   fi
