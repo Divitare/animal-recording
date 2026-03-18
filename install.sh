@@ -816,10 +816,10 @@ start_service() {
 }
 
 verify_headless_node_service() {
-  local expected_commit actual_commit started_flag attempt
+  local expected_commit actual_commit started_flag species_available_flag attempt
   expected_commit="$(cat "${RELEASE_COMMIT_FILE}" 2>/dev/null || true)"
 
-  for attempt in $(seq 1 25); do
+  for attempt in $(seq 1 60); do
     if [[ -f "${STATUS_FILE}" ]]; then
       actual_commit="$(
         STATUS_JSON_PATH="${STATUS_FILE}" "${PYTHON_BIN}" - <<'PY'
@@ -841,7 +841,17 @@ payload = json.loads(Path(os.environ["STATUS_JSON_PATH"]).read_text(encoding="ut
 print(str(bool((payload.get("service") or {}).get("started"))))
 PY
       )"
-      if [[ "${started_flag}" == "True" && ( -z "${expected_commit}" || "${actual_commit}" == "${expected_commit}" ) ]]; then
+      species_available_flag="$(
+        STATUS_JSON_PATH="${STATUS_FILE}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(Path(os.environ["STATUS_JSON_PATH"]).read_text(encoding="utf-8"))
+print(str(bool((payload.get("service") or {}).get("species_available"))))
+PY
+      )"
+      if [[ "${started_flag}" == "True" && "${species_available_flag}" == "True" && ( -z "${expected_commit}" || "${actual_commit}" == "${expected_commit}" ) ]]; then
         log "Verified headless node status file: ${STATUS_FILE}"
         return
       fi
@@ -849,7 +859,7 @@ PY
     sleep 2
   done
 
-  die "The bird-node service did not produce a valid status file at ${STATUS_FILE} after installation."
+  die "The bird-node service did not become ready at ${STATUS_FILE} after installation. Check 'systemctl status ${SERVICE_NAME}' and 'journalctl -u ${SERVICE_NAME} -n 100 --no-pager'."
 }
 
 verify_running_service() {

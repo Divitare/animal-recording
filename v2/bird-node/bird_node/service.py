@@ -15,7 +15,7 @@ from .audio import peak_amplitude, save_audio_samples, stream_input_chunks
 from .config import BirdNodeConfig
 from .health import disk_usage_summary, read_cpu_temperature_celsius, root_mean_square
 from .runtime_logging import get_application_logger, get_birdnet_logger
-from .species import build_species_classifier
+from .species import NullSpeciesClassifier, build_species_classifier
 from .storage import BirdNodeStorage
 
 SESSION_DETECTION_MERGE_GAP_SECONDS = 1.5
@@ -241,7 +241,7 @@ class BirdNodeService:
         self.storage = BirdNodeStorage(config.database_path, config.status_file)
         self.logger = get_application_logger()
         self.birdnet_logger = get_birdnet_logger()
-        self.classifier = build_species_classifier()
+        self.classifier = NullSpeciesClassifier("BirdNET runtime is still starting.")
         self.stop_event = threading.Event()
         self.analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bird-node-birdnet")
         self.pending_windows: list[PendingWindow] = []
@@ -279,13 +279,17 @@ class BirdNodeService:
         self.total_saved_detections = int(
             ((self.metrics_summary.get("totals") or {}).get("detection_count") or 0)
         )
+        self._write_status(recording=False, message="Starting bird-node. Initializing BirdNET runtime.")
 
         if self.config.disable_recorder:
             self.logger.warning("Recorder is disabled by configuration. Exiting without starting audio capture.")
             self._write_status(recording=False, message="Recorder disabled by configuration.")
             return
 
+        self.classifier = build_species_classifier()
+
         if self.config.species_provider == "birdnet" and not self.classifier.available():
+            self._write_status(recording=False, message="BirdNET initialization failed.")
             raise RuntimeError(getattr(self.classifier, "failure_reason", None) or "BirdNET is unavailable.")
 
         self.logger.info(
