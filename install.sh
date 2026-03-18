@@ -56,6 +56,41 @@ die() {
   exit 1
 }
 
+prompt_user() {
+  local __result_var="$1"
+  local prompt_text="$2"
+  local response=""
+
+  if [[ -r /dev/tty ]]; then
+    printf '%s' "${prompt_text}" > /dev/tty
+    IFS= read -r response < /dev/tty
+  elif [[ -t 0 ]]; then
+    IFS= read -r -p "${prompt_text}" response
+  else
+    die "Interactive input is not available. Re-run from a terminal or set BIRD_INSTALL_VARIANT to one of: v1, v2-bird-node, v2-bird-hub."
+  fi
+
+  printf -v "${__result_var}" '%s' "${response}"
+}
+
+normalize_variant_choice() {
+  local raw_choice="$1"
+  case "${raw_choice}" in
+    1|v1|legacy|legacy-single-node|v1-legacy)
+      printf 'v1\n'
+      ;;
+    2|v2-bird-node|bird-node|node)
+      printf 'v2-bird-node\n'
+      ;;
+    3|v2-bird-hub|bird-hub|hub)
+      printf 'v2-bird-hub\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 prepare_run_logging() {
   if [[ -n "${INSTALL_LOG_FILE}" ]]; then
     return
@@ -494,17 +529,23 @@ EOF
 }
 
 select_install_variant() {
+  local choice=""
+  local normalized_choice=""
   printf 'No existing installation was detected.\n'
   printf '1) %s\n' "$(variant_label v1)"
   printf '2) %s\n' "$(variant_label v2-bird-node)"
   printf '3) %s\n' "$(variant_label v2-bird-hub)"
-  read -r -p "Choose [1-3]: " choice
-  case "${choice}" in
-    1) INSTALL_VARIANT="v1" ;;
-    2) INSTALL_VARIANT="v2-bird-node" ;;
-    3) INSTALL_VARIANT="v2-bird-hub" ;;
-    *) die "Unknown option." ;;
-  esac
+  choice="${BIRD_INSTALL_VARIANT:-}"
+  if [[ -z "${choice}" ]]; then
+    prompt_user choice "Choose [1-3]: "
+  else
+    log "Using preselected install variant from BIRD_INSTALL_VARIANT=${choice}"
+  fi
+
+  if ! normalized_choice="$(normalize_variant_choice "${choice}")"; then
+    die "Unknown install option '${choice}'. Use 1, 2, 3, v1, v2-bird-node, or v2-bird-hub."
+  fi
+  INSTALL_VARIANT="${normalized_choice}"
 }
 
 prepare_source_checkout() {
@@ -839,8 +880,9 @@ verify_running_service() {
 }
 
 confirm_uninstall() {
+  local confirmation=""
   printf 'This will permanently remove the installed variant, its recordings or data, logs, config, and service user.\n'
-  read -r -p "Type DELETE to continue: " confirmation
+  prompt_user confirmation "Type DELETE to continue: "
   [[ "${confirmation}" == "DELETE" ]] || die "Uninstall cancelled."
 }
 

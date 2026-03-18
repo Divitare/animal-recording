@@ -15,6 +15,12 @@ Use this same command for both first-time installation and later updates:
 curl -fsSL https://raw.githubusercontent.com/Divitare/animal-recording/main/install.sh | sudo bash
 ```
 
+If you want to skip the first-install menu and choose the variant directly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Divitare/animal-recording/main/install.sh | sudo BIRD_INSTALL_VARIANT=v2-bird-node bash
+```
+
 What it does:
 
 - on the first installation it asks which variant to install:
