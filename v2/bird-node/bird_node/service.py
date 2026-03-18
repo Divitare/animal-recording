@@ -21,6 +21,7 @@ from .storage import BirdNodeStorage
 SESSION_DETECTION_MERGE_GAP_SECONDS = 1.5
 MICROPHONE_STALE_AFTER_SECONDS = 10.0
 BIRDNET_FAILURES_FOR_FAILING_HEALTH = 3
+DEVICE_RETRY_DELAY_SECONDS = 5.0
 
 
 def utc_iso(value: datetime | None) -> str | None:
@@ -45,6 +46,15 @@ def empty_metric_totals() -> dict[str, float | int]:
         "silence_event_count": 0,
         "overflow_event_count": 0,
     }
+
+
+def is_retryable_audio_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return (
+        "no input devices were found" in message
+        or "configured microphone index" in message
+        or "no input device matched microphone name filter" in message
+    )
 
 
 def split_interval_by_utc_day(started_at: datetime, ended_at: datetime) -> list[tuple[str, float]]:
@@ -271,6 +281,7 @@ class BirdNodeService:
         self.last_health_snapshot_monotonic: float | None = None
         self.last_health_snapshot_id: int | None = None
         self.last_health_snapshot_at: datetime | None = None
+        self.waiting_for_device_since: datetime | None = None
         self.last_status_write = 0.0
 
     def run_forever(self) -> None:
@@ -305,11 +316,30 @@ class BirdNodeService:
         self._write_status(recording=False, message="Starting bird-node.")
 
         try:
-            self._capture_loop()
-        except Exception as exc:
-            self.last_error = str(exc)
-            self.logger.exception("bird-node capture loop failed.")
-            raise
+            while not self.stop_event.is_set():
+                try:
+                    self._capture_loop()
+                    break
+                except Exception as exc:
+                    self.last_error = str(exc)
+                    if is_retryable_audio_error(exc):
+                        if self.waiting_for_device_since is None:
+                            self.waiting_for_device_since = datetime.utcnow()
+                        self.current_device_name = None
+                        self.logger.warning(
+                            "Audio input is not available yet. Waiting %.1fs before retrying. error=%s",
+                            DEVICE_RETRY_DELAY_SECONDS,
+                            exc,
+                        )
+                        self._write_status(
+                            recording=False,
+                            message="Waiting for a usable microphone input device.",
+                        )
+                        if self.stop_event.wait(DEVICE_RETRY_DELAY_SECONDS):
+                            break
+                        continue
+                    self.logger.exception("bird-node capture loop failed.")
+                    raise
         finally:
             self._drain_pending_windows(final_wait=True)
             self.analysis_executor.shutdown(wait=False, cancel_futures=False)
@@ -337,6 +367,7 @@ class BirdNodeService:
         ):
             if self.current_device_name is None:
                 self.current_device_name = chunk.device_name
+                self.waiting_for_device_since = None
                 self.logger.info("Audio capture opened device=%s index=%s", chunk.device_name, chunk.device_index)
 
             chunk_start_frame = rolling_buffer.append(chunk.samples)
@@ -784,6 +815,8 @@ class BirdNodeService:
 
         if self.current_device_name is None:
             status = "waiting-for-device"
+            if self.waiting_for_device_since is not None:
+                reasons.append("The node is waiting for a usable microphone input device.")
         elif self.last_audio_chunk_at is None:
             status = "starting"
         else:
@@ -806,6 +839,7 @@ class BirdNodeService:
         return {
             "status": status,
             "device_name": self.current_device_name,
+            "waiting_for_device_since": utc_iso(self.waiting_for_device_since),
             "last_audio_chunk_at": utc_iso(self.last_audio_chunk_at),
             "last_peak_amplitude": round(self.last_audio_peak_amplitude, 6),
             "last_rms_amplitude": round(self.last_audio_rms, 6),

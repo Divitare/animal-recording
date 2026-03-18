@@ -417,11 +417,16 @@ resolve_python() {
 
 ensure_service_user() {
   if id -u "${SERVICE_USER}" >/dev/null 2>&1; then
-    return
+    :
+  else
+    log "Creating service user ${SERVICE_USER}."
+    useradd --system --home "${DATA_DIR}" --shell /usr/sbin/nologin "${SERVICE_USER}" 2>/dev/null \
+      || useradd --system --home "${DATA_DIR}" --shell /bin/false "${SERVICE_USER}"
   fi
-  log "Creating service user ${SERVICE_USER}."
-  useradd --system --home "${DATA_DIR}" --shell /usr/sbin/nologin "${SERVICE_USER}" 2>/dev/null \
-    || useradd --system --home "${DATA_DIR}" --shell /bin/false "${SERVICE_USER}"
+
+  if getent group audio >/dev/null 2>&1; then
+    usermod -a -G audio "${SERVICE_USER}" || true
+  fi
 }
 
 ensure_directories() {
@@ -769,6 +774,7 @@ Wants=network.target
 Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
+SupplementaryGroups=audio
 WorkingDirectory=${CURRENT_DIR}
 EnvironmentFile=-${ENV_FILE}
 ExecStart=${CURRENT_DIR}/run_server.sh
