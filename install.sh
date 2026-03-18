@@ -691,7 +691,7 @@ verify_species_runtime() {
   local import_statement=""
   import_statement="from ${SPECIES_VERIFY_MODULE} import build_species_classifier"
   if verify_output="$(
-    cd "${CURRENT_DIR}" && "${VENV_DIR}/bin/python" - <<PY
+    cd "${CURRENT_DIR}" && PYTHONPATH="${CURRENT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" "${VENV_DIR}/bin/python" - <<PY
 ${import_statement}
 
 classifier = build_species_classifier()
@@ -749,7 +749,7 @@ initialize_application() {
   fi
 
   set_stage "Initializing application database"
-  su -s /bin/bash -c "cd '${CURRENT_DIR}' && set -a && source '${ENV_FILE}' && set +a && BIRD_MONITOR_DISABLE_RECORDER=true '${VENV_DIR}/bin/python' -c \"from bird_monitor.app import create_app; create_app()\"" "${SERVICE_USER}"
+  su -s /bin/bash -c "cd '${CURRENT_DIR}' && set -a && source '${ENV_FILE}' && set +a && export PYTHONPATH='${CURRENT_DIR}'\"\${PYTHONPATH:+:\${PYTHONPATH}}\" && BIRD_MONITOR_DISABLE_RECORDER=true '${VENV_DIR}/bin/python' -c \"from bird_monitor.app import create_app; create_app()\"" "${SERVICE_USER}"
   repair_runtime_permissions
 }
 
