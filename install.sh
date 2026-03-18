@@ -301,14 +301,20 @@ detect_installed_variant() {
     esac
   fi
 
-  if [[ -d /opt/bird-monitor/current || -f /etc/bird-monitor.env || -f /etc/systemd/system/bird-monitor.service ]]; then
+  if [[ -f /opt/bird-monitor/.run-mode ]]; then
     candidates+=("v1")
+  elif [[ -d /opt/bird-monitor/current || -f /etc/bird-monitor.env || -f /etc/systemd/system/bird-monitor.service ]]; then
+    warn "Ignoring incomplete v1 installation artifacts because /opt/bird-monitor/.run-mode is missing."
   fi
-  if [[ -d /opt/bird-node/current || -f /etc/bird-node.env || -f /etc/systemd/system/bird-node.service ]]; then
+  if [[ -f /opt/bird-node/.run-mode ]]; then
     candidates+=("v2-bird-node")
+  elif [[ -d /opt/bird-node/current || -f /etc/bird-node.env || -f /etc/systemd/system/bird-node.service ]]; then
+    warn "Ignoring incomplete v2 bird-node installation artifacts because /opt/bird-node/.run-mode is missing."
   fi
-  if [[ -d /opt/bird-hub/current || -f /etc/bird-hub.env || -f /etc/systemd/system/bird-hub.service ]]; then
+  if [[ -f /opt/bird-hub/.run-mode ]]; then
     candidates+=("v2-bird-hub")
+  elif [[ -d /opt/bird-hub/current || -f /etc/bird-hub.env || -f /etc/systemd/system/bird-hub.service ]]; then
+    warn "Ignoring incomplete v2 bird-hub installation artifacts because /opt/bird-hub/.run-mode is missing."
   fi
 
   if [[ "${#candidates[@]}" -gt 1 ]]; then
