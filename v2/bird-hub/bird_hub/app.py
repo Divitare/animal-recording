@@ -172,22 +172,26 @@ def create_app() -> Flask:
             abort(404)
         return render_template("event_detail.html", event=event)
 
+    def _status_payload() -> dict[str, object]:
+        return {
+            "app": {
+                "variant": config.app_variant,
+                "commit": config.app_commit,
+            },
+            "hub": {
+                "database_path": str(config.database_path),
+                "clip_dir": str(config.clip_dir),
+                "upload_dir": str(config.upload_dir),
+                "allow_unauthenticated_ingest": config.allow_unauthenticated_ingest,
+            },
+            "counts": storage.get_hub_summary(),
+        }
+
     @app.get("/api/v1/status")
+    @app.get("/api/status")
     def api_status() -> object:
         return jsonify(
-            {
-                "app": {
-                    "variant": config.app_variant,
-                    "commit": config.app_commit,
-                },
-                "hub": {
-                    "database_path": str(config.database_path),
-                    "clip_dir": str(config.clip_dir),
-                    "upload_dir": str(config.upload_dir),
-                    "allow_unauthenticated_ingest": config.allow_unauthenticated_ingest,
-                },
-                "counts": storage.get_hub_summary(),
-            }
+            _status_payload()
         )
 
     @app.post("/api/v1/ingest/bundle")

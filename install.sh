@@ -37,6 +37,7 @@ VERIFY_SPECIES_RUNTIME="false"
 INITIALIZE_APP_DATABASE="false"
 SPECIES_VERIFY_MODULE=""
 STATUS_FILE=""
+SERVICE_STATUS_PATH=""
 
 declare -a WARNING_LOG=()
 declare -a ERROR_LOG=()
@@ -239,6 +240,7 @@ configure_variant() {
       VERIFY_SPECIES_RUNTIME="true"
       INITIALIZE_APP_DATABASE="true"
       SPECIES_VERIFY_MODULE="bird_monitor.species"
+      SERVICE_STATUS_PATH="/api/status"
       ;;
     v2-bird-node)
       APP_NAME="bird-node"
@@ -253,6 +255,7 @@ configure_variant() {
       VERIFY_SPECIES_RUNTIME="true"
       INITIALIZE_APP_DATABASE="false"
       SPECIES_VERIFY_MODULE="bird_node.species"
+      SERVICE_STATUS_PATH="/api/status"
       ;;
     v2-bird-hub)
       APP_NAME="bird-hub"
@@ -267,6 +270,7 @@ configure_variant() {
       VERIFY_SPECIES_RUNTIME="false"
       INITIALIZE_APP_DATABASE="false"
       SPECIES_VERIFY_MODULE=""
+      SERVICE_STATUS_PATH="/api/v1/status"
       ;;
     *)
       die "Unknown install variant: ${INSTALL_VARIANT}"
@@ -894,13 +898,14 @@ verify_running_service() {
   fi
 
   set_stage "Verifying running service version"
-  local port expected_commit response actual_commit attempt
+  local port expected_commit response actual_commit attempt status_path
   port="$(read_env_value 'BIRD_MONITOR_PORT' "${ENV_FILE}")"
   port="${port:-${DEFAULT_PORT}}"
   expected_commit="$(cat "${RELEASE_COMMIT_FILE}" 2>/dev/null || true)"
+  status_path="${SERVICE_STATUS_PATH:-/api/status}"
 
   for attempt in $(seq 1 25); do
-    response="$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/api/status" 2>/dev/null || true)"
+    response="$(curl -fsS --max-time 5 "http://127.0.0.1:${port}${status_path}" 2>/dev/null || true)"
     if [[ -n "${response}" ]]; then
       actual_commit="$(
         RESPONSE_JSON="${response}" "${PYTHON_BIN}" -c "import json, os; payload=json.loads(os.environ['RESPONSE_JSON']); print(((payload.get('app') or {}).get('commit') or '').strip())"
@@ -916,7 +921,7 @@ verify_running_service() {
   if [[ -n "${expected_commit}" ]]; then
     die "The server did not come up on the expected commit ${expected_commit}. Check the installer log, systemctl status ${SERVICE_NAME}, and the service logs."
   fi
-  die "The server did not respond successfully on http://127.0.0.1:${port}/api/status after installation."
+  die "The server did not respond successfully on http://127.0.0.1:${port}${status_path} after installation."
 }
 
 confirm_uninstall() {
