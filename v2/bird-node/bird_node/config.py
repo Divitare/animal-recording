@@ -41,6 +41,8 @@ class BirdNodeConfig:
     app_commit: str
     data_dir: Path
     clips_dir: Path
+    exports_dir: Path
+    sync_queue_dir: Path
     log_dir: Path
     status_file: Path
     database_path: Path
@@ -63,6 +65,12 @@ class BirdNodeConfig:
     location_name: str | None
     latitude: float | None
     longitude: float | None
+    hub_url: str | None
+    hub_token: str | None
+    sync_interval_seconds: float
+    sync_retry_base_seconds: float
+    sync_max_events_per_bundle: int
+    sync_max_health_snapshots_per_bundle: int
     species_provider: str
     species_min_confidence: float
     disable_recorder: bool
@@ -77,6 +85,8 @@ def load_config() -> BirdNodeConfig:
 
     data_dir = Path(os.getenv("BIRD_MONITOR_DATA_DIR", str(package_root / "data"))).resolve()
     clips_dir = data_dir / "clips"
+    exports_dir = data_dir / "exports"
+    sync_queue_dir = data_dir / "sync-queue"
     log_dir = Path(os.getenv("BIRD_MONITOR_LOG_DIR", str(data_dir / "logs"))).resolve()
     status_file = Path(os.getenv("BIRD_MONITOR_STATUS_FILE", str(data_dir / "status.json"))).resolve()
     database_path = data_dir / "bird_node.db"
@@ -84,6 +94,8 @@ def load_config() -> BirdNodeConfig:
 
     data_dir.mkdir(parents=True, exist_ok=True)
     clips_dir.mkdir(parents=True, exist_ok=True)
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    sync_queue_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     status_file.parent.mkdir(parents=True, exist_ok=True)
     matplotlib_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +106,8 @@ def load_config() -> BirdNodeConfig:
         app_commit=app_commit,
         data_dir=data_dir,
         clips_dir=clips_dir,
+        exports_dir=exports_dir,
+        sync_queue_dir=sync_queue_dir,
         log_dir=log_dir,
         status_file=status_file,
         database_path=database_path,
@@ -116,6 +130,12 @@ def load_config() -> BirdNodeConfig:
         location_name=os.getenv("BIRD_MONITOR_LOCATION_NAME", "").strip() or None,
         latitude=_env_optional_float("BIRD_MONITOR_LATITUDE"),
         longitude=_env_optional_float("BIRD_MONITOR_LONGITUDE"),
+        hub_url=os.getenv("BIRD_MONITOR_HUB_URL", "").strip() or None,
+        hub_token=os.getenv("BIRD_MONITOR_HUB_TOKEN", "").strip() or None,
+        sync_interval_seconds=_env_float("BIRD_MONITOR_SYNC_INTERVAL_SECONDS", 60.0),
+        sync_retry_base_seconds=_env_float("BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS", 60.0),
+        sync_max_events_per_bundle=_env_int("BIRD_MONITOR_SYNC_MAX_EVENTS_PER_BUNDLE", 25),
+        sync_max_health_snapshots_per_bundle=_env_int("BIRD_MONITOR_SYNC_MAX_HEALTH_SNAPSHOTS_PER_BUNDLE", 12),
         species_provider=os.getenv("BIRD_MONITOR_SPECIES_PROVIDER", "birdnet").strip().casefold() or "birdnet",
         species_min_confidence=_env_float("BIRD_MONITOR_SPECIES_MIN_CONFIDENCE", 0.35),
         disable_recorder=_env_flag("BIRD_MONITOR_DISABLE_RECORDER", False),

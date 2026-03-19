@@ -14,9 +14,21 @@ Current behavior:
 - tracks persistent effort statistics such as hours recorded, hours successfully analyzed, microphone uptime, and detections per UTC day
 - stores a persistent health snapshot at least every 5 minutes
 - can export bird events, matching clips, and the nearest health snapshot as a zip archive with `python -m bird_node export-events`
+- can queue and upload offline-first sync bundles to `bird-hub` over WLAN or Ethernet when `BIRD_MONITOR_HUB_URL` is configured
+- retries failed uploads automatically and reports sync health in `status.json`
 
 Example export command:
 
 ```bash
 python -m bird_node export-events --since-hours 24
+python -m bird_node sync-now
 ```
+
+Main sync environment variables:
+
+- `BIRD_MONITOR_HUB_URL`
+- `BIRD_MONITOR_HUB_TOKEN`
+- `BIRD_MONITOR_SYNC_INTERVAL_SECONDS`
+- `BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS`
+- `BIRD_MONITOR_SYNC_MAX_EVENTS_PER_BUNDLE`
+- `BIRD_MONITOR_SYNC_MAX_HEALTH_SNAPSHOTS_PER_BUNDLE`

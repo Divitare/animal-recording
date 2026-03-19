@@ -17,6 +17,7 @@ from .health import disk_usage_summary, read_cpu_temperature_celsius, root_mean_
 from .runtime_logging import get_application_logger, get_birdnet_logger
 from .species import NullSpeciesClassifier, build_species_classifier
 from .storage import BirdNodeStorage
+from .sync import BirdNodeSyncManager
 
 SESSION_DETECTION_MERGE_GAP_SECONDS = 1.5
 MICROPHONE_STALE_AFTER_SECONDS = 10.0
@@ -283,6 +284,7 @@ class BirdNodeService:
         self.last_health_snapshot_at: datetime | None = None
         self.waiting_for_device_since: datetime | None = None
         self.last_status_write = 0.0
+        self.sync_manager = BirdNodeSyncManager(config, self.storage, self.stop_event)
 
     def run_forever(self) -> None:
         self.storage.initialize()
@@ -313,6 +315,7 @@ class BirdNodeService:
             self.config.live_window_seconds,
             self.config.live_step_seconds,
         )
+        self.sync_manager.start()
         self._write_status(recording=False, message="Starting bird-node.")
 
         try:
@@ -341,7 +344,9 @@ class BirdNodeService:
                     self.logger.exception("bird-node capture loop failed.")
                     raise
         finally:
+            self.stop_event.set()
             self._drain_pending_windows(final_wait=True)
+            self.sync_manager.stop()
             self.analysis_executor.shutdown(wait=False, cancel_futures=False)
             self._write_status(started=False, recording=False, message="bird-node stopped.")
 
@@ -905,6 +910,9 @@ class BirdNodeService:
             ],
         }
 
+    def _build_sync_status(self) -> dict[str, object]:
+        return self.sync_manager.status_payload()
+
     def _build_time_status(self, now_utc: datetime) -> dict[str, object]:
         return {
             "current_utc": utc_iso(now_utc),
@@ -987,6 +995,7 @@ class BirdNodeService:
                 "message": message,
                 "updated_at": utc_iso(now_utc),
                 "runtime_details": runtime_details,
+                "sync": self._build_sync_status(),
             },
             "health": {
                 "microphone": self._build_microphone_health(),

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import signal
 import sys
+import threading
 from pathlib import Path
 
 from .config import load_config
 from .exporter import export_events_archive
 from .runtime_logging import configure_logging, get_application_logger
 from .service import BirdNodeService
+from .storage import BirdNodeStorage
+from .sync import BirdNodeSyncManager
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--since-hours", type=float, default=24.0, help="How many hours back to export when --since-utc is not set.")
     export_parser.add_argument("--since-utc", help="UTC start timestamp, for example 2026-03-17T00:00:00Z.")
     export_parser.add_argument("--until-utc", help="UTC end timestamp, for example 2026-03-17T23:59:59Z.")
+
+    subparsers.add_parser("sync-now", help="Run one immediate sync attempt against the configured bird-hub.")
 
     return parser
 
@@ -61,6 +67,22 @@ def run_export(args: argparse.Namespace) -> None:
     print(archive_path)
 
 
+def run_sync_now() -> None:
+    config = load_config()
+    log_paths = configure_logging(config.log_dir)
+    logger = get_application_logger()
+    logger.info("bird-node manual sync requested app_log=%s birdnet_log=%s", log_paths["app_log_file"], log_paths["birdnet_log_file"])
+
+    storage = BirdNodeStorage(config.database_path, config.status_file)
+    storage.initialize()
+    sync_manager = BirdNodeSyncManager(config, storage, stop_event=threading.Event())
+    try:
+        sync_manager.run_once()
+        print(json.dumps(sync_manager.status_payload(), indent=2, sort_keys=True))
+    finally:
+        sync_manager.stop()
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -71,6 +93,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if command == "export-events":
         run_export(args)
+        return
+    if command == "sync-now":
+        run_sync_now()
         return
 
     parser.error(f"Unknown command: {command}")

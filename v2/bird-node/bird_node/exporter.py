@@ -48,51 +48,36 @@ def _clip_archive_name(event_id: str, original_path: Path) -> str:
     return f"clips/{event_id}{suffix}"
 
 
-def export_events_archive(
+def _serialize_snapshot(snapshot: dict[str, object], *, config: BirdNodeConfig) -> dict[str, object]:
+    return {
+        "snapshot_id": int(snapshot["id"]),
+        "node_id": snapshot.get("node_id"),
+        "captured_at_utc": snapshot.get("captured_at"),
+        "time_source": snapshot.get("time_source"),
+        "time_synchronized": bool(snapshot.get("time_synchronized")),
+        "app_version": snapshot.get("app_commit") or config.app_commit,
+        "runtime_backend": snapshot.get("runtime_backend"),
+        "birdnet_version": snapshot.get("birdnet_version"),
+        "snapshot": snapshot.get("payload") or {},
+    }
+
+
+def _build_manifest(
     config: BirdNodeConfig,
     *,
-    output_path: Path | None = None,
-    since_hours: float = 24.0,
-    since_utc: str | None = None,
-    until_utc: str | None = None,
-) -> Path:
-    storage = BirdNodeStorage(config.database_path, config.status_file)
-    storage.initialize()
-
-    generated_at = _utc_now_iso()
-    if since_utc is None:
-        since_utc = (datetime.utcnow() - timedelta(hours=max(since_hours, 0.0))).isoformat() + "Z"
-    if until_utc is None:
-        until_utc = generated_at
-
-    detections = storage.list_detections(since_utc=since_utc, until_utc=until_utc)
-    snapshots = storage.list_health_snapshots()
-
-    if output_path is None:
-        export_dir = config.data_dir / "exports"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        output_path = export_dir / f"{config.node_id}-events-{generated_at.replace(':', '').replace('.', '')}.zip"
-    else:
-        output_path = output_path.resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
+    detections: list[dict[str, object]],
+    snapshots: list[dict[str, object]],
+    generated_at: str,
+    since_utc: str | None,
+    until_utc: str | None,
+) -> tuple[dict[str, object], list[tuple[Path, str]]]:
     event_records: list[dict[str, object]] = []
     snapshot_records: list[dict[str, object]] = []
     snapshot_index_by_id: dict[int, dict[str, object]] = {}
     archive_files: list[tuple[Path, str]] = []
 
     for snapshot in snapshots:
-        snapshot_record = {
-            "snapshot_id": int(snapshot["id"]),
-            "node_id": snapshot.get("node_id"),
-            "captured_at_utc": snapshot.get("captured_at"),
-            "time_source": snapshot.get("time_source"),
-            "time_synchronized": bool(snapshot.get("time_synchronized")),
-            "app_version": snapshot.get("app_commit") or config.app_commit,
-            "runtime_backend": snapshot.get("runtime_backend"),
-            "birdnet_version": snapshot.get("birdnet_version"),
-            "snapshot": snapshot.get("payload") or {},
-        }
+        snapshot_record = _serialize_snapshot(snapshot, config=config)
         snapshot_index_by_id[int(snapshot["id"])] = snapshot_record
         snapshot_records.append(snapshot_record)
 
@@ -200,6 +185,29 @@ def export_events_archive(
         "events": event_records,
         "health_snapshots": snapshot_records,
     }
+    return archive_manifest, archive_files
+
+
+def _write_archive(
+    config: BirdNodeConfig,
+    *,
+    detections: list[dict[str, object]],
+    snapshots: list[dict[str, object]],
+    output_path: Path,
+    generated_at: str,
+    since_utc: str | None,
+    until_utc: str | None,
+) -> Path:
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_manifest, archive_files = _build_manifest(
+        config,
+        detections=detections,
+        snapshots=snapshots,
+        generated_at=generated_at,
+        since_utc=since_utc,
+        until_utc=until_utc,
+    )
 
     with ZipFile(output_path, mode="w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("export.json", json.dumps(archive_manifest, indent=2, sort_keys=True) + "\n")
@@ -208,3 +216,76 @@ def export_events_archive(
                 archive.write(source_path, archive_name)
 
     return output_path
+
+
+def export_events_archive(
+    config: BirdNodeConfig,
+    *,
+    output_path: Path | None = None,
+    since_hours: float = 24.0,
+    since_utc: str | None = None,
+    until_utc: str | None = None,
+) -> Path:
+    storage = BirdNodeStorage(config.database_path, config.status_file)
+    storage.initialize()
+
+    generated_at = _utc_now_iso()
+    if since_utc is None:
+        since_utc = (datetime.utcnow() - timedelta(hours=max(since_hours, 0.0))).isoformat() + "Z"
+    if until_utc is None:
+        until_utc = generated_at
+
+    detections = storage.list_detections(since_utc=since_utc, until_utc=until_utc)
+    snapshots = storage.list_health_snapshots()
+
+    if output_path is None:
+        output_path = config.exports_dir / f"{config.node_id}-events-{generated_at.replace(':', '').replace('.', '')}.zip"
+
+    return _write_archive(
+        config,
+        detections=detections,
+        snapshots=snapshots,
+        output_path=output_path,
+        generated_at=generated_at,
+        since_utc=since_utc,
+        until_utc=until_utc,
+    )
+
+
+def export_selected_records_archive(
+    config: BirdNodeConfig,
+    *,
+    detection_ids: list[int],
+    explicit_snapshot_ids: list[int],
+    output_path: Path,
+) -> Path:
+    storage = BirdNodeStorage(config.database_path, config.status_file)
+    storage.initialize()
+
+    detections = storage.list_detections_by_ids(detection_ids)
+    all_snapshots = storage.list_health_snapshots()
+    selected_snapshots = {int(item["id"]): item for item in storage.list_health_snapshots_by_ids(explicit_snapshot_ids)}
+
+    for detection in detections:
+        nearest_snapshot = _select_nearest_snapshot(all_snapshots, event_started_at=str(detection.get("started_at") or ""))
+        if nearest_snapshot is not None:
+            selected_snapshots[int(nearest_snapshot["id"])] = nearest_snapshot
+
+    generated_at = _utc_now_iso()
+    if detections:
+        since_utc = str(detections[0].get("started_at") or generated_at)
+        until_utc = str(detections[-1].get("ended_at") or generated_at)
+    else:
+        snapshot_list = list(selected_snapshots.values())
+        since_utc = str(snapshot_list[0].get("captured_at") or generated_at) if snapshot_list else generated_at
+        until_utc = str(snapshot_list[-1].get("captured_at") or generated_at) if snapshot_list else generated_at
+
+    return _write_archive(
+        config,
+        detections=detections,
+        snapshots=sorted(selected_snapshots.values(), key=lambda item: str(item.get("captured_at") or "")),
+        output_path=output_path,
+        generated_at=generated_at,
+        since_utc=since_utc,
+        until_utc=until_utc,
+    )

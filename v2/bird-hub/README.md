@@ -25,6 +25,9 @@ python -m bird_hub create-node-token bird-node-01
 python -m bird_hub ingest-bundle /path/to/export.zip
 ```
 
+For authenticated node uploads, create a token on the hub and place it into the node's
+`BIRD_MONITOR_HUB_TOKEN` environment variable.
+
 Main API endpoints:
 
 - `GET /api/v1/status`
