@@ -2,6 +2,12 @@
 
 This folder now contains the first real `bird-node` runtime.
 
+Install or update `bird-node` directly with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Divitare/animal-recording/main/install-bird-node.sh | sudo bash
+```
+
 Current behavior:
 
 - runs headless without a web interface

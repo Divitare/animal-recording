@@ -2,6 +2,12 @@
 
 `bird-hub` is the central offline-first ingest and review service for the new multi-node system.
 
+Install or update `bird-hub` directly with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Divitare/animal-recording/main/install-bird-hub.sh | sudo bash
+```
+
 Current MVP features:
 
 - accepts `bird-node` export zip bundles
