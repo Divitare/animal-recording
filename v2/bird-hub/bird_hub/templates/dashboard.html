@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}bird-hub Dashboard{% endblock %}
+{% block content %}
+  <section class="hero">
+    <div>
+      <p class="eyebrow">Offline-first ingest hub</p>
+      <h2>Review node uploads, detections, clips, and health in one place.</h2>
+      <p class="hero-copy">
+        This first hub MVP accepts node export bundles, stores clips on disk, keeps
+        health snapshots, and gives you species and node visibility across the network.
+      </p>
+    </div>
+    <form class="upload-card" action="{{ url_for('upload_bundle_page') }}" method="post" enctype="multipart/form-data">
+      <h3>Upload Node Bundle</h3>
+      <p>Use this while automatic node-to-hub sync is still being added.</p>
+      <input type="file" name="bundle" accept=".zip" required>
+      <button type="submit">Ingest Export Zip</button>
+    </form>
+  </section>
+
+  <section class="card-grid card-grid--stats">
+    <article class="card stat-card">
+      <span>Total Nodes</span>
+      <strong>{{ summary.node_count }}</strong>
+    </article>
+    <article class="card stat-card">
+      <span>Active Nodes</span>
+      <strong>{{ summary.active_node_count }}</strong>
+    </article>
+    <article class="card stat-card">
+      <span>Detected Events</span>
+      <strong>{{ summary.event_count }}</strong>
+    </article>
+    <article class="card stat-card">
+      <span>Ingest Batches</span>
+      <strong>{{ summary.batch_count }}</strong>
+    </article>
+  </section>
+
+  <section class="two-column-layout">
+    <article class="card">
+      <div class="section-heading">
+        <h3>Top Species</h3>
+        <a href="{{ url_for('events_page') }}">View all events</a>
+      </div>
+      {% if species_stats %}
+        <ul class="species-list">
+          {% for item in species_stats %}
+            <li>
+              <div>
+                <strong>{{ item.species_common_name }}</strong>
+                {% if item.species_scientific_name %}
+                  <span>{{ item.species_scientific_name }}</span>
+                {% endif %}
+              </div>
+              <div class="metric-pill">{{ item.detection_count }} detections</div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty-state">No bird events have been ingested yet.</p>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <h3>Recent Ingest Batches</h3>
+        <span class="muted">{{ summary.failed_batch_count }} failed</span>
+      </div>
+      {% if batches %}
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Received</th>
+                <th>Node</th>
+                <th>Status</th>
+                <th>Events</th>
+                <th>Clips</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for batch in batches %}
+                <tr>
+                  <td>{{ batch.received_at|utc_display }}</td>
+                  <td>{{ batch.node_id or "-" }}</td>
+                  <td><span class="status status--{{ batch.status }}">{{ batch.status }}</span></td>
+                  <td>{{ batch.processed_event_count }}</td>
+                  <td>{{ batch.processed_clip_count }}</td>
+                </tr>
+                {% if batch.error_message %}
+                  <tr class="detail-row">
+                    <td colspan="5">{{ batch.error_message }}</td>
+                  </tr>
+                {% endif %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="empty-state">No bundles have been uploaded yet.</p>
+      {% endif %}
+    </article>
+  </section>
+
+  <section class="two-column-layout">
+    <article class="card">
+      <div class="section-heading">
+        <h3>Recent Nodes</h3>
+        <a href="{{ url_for('nodes_page') }}">All nodes</a>
+      </div>
+      {% if nodes %}
+        <ul class="node-list">
+          {% for node in nodes %}
+            <li>
+              <div>
+                <a href="{{ url_for('node_detail_page', node_id=node.node_id) }}"><strong>{{ node.display_name }}</strong></a>
+                <span>{{ node.location_name or "Location not set yet" }}</span>
+              </div>
+              <div class="node-badges">
+                <span class="status status--{{ 'active' if node.active else 'inactive' }}">{{ 'active' if node.active else 'inactive' }}</span>
+                <span class="metric-pill">{{ node.detection_count_total }} detections</span>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty-state">No nodes have uploaded data yet.</p>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <h3>Recent Events</h3>
+        <a href="{{ url_for('events_page') }}">Browse all</a>
+      </div>
+      {% if summary.recent_events %}
+        <ul class="event-list">
+          {% for event in summary.recent_events %}
+            <li>
+              <a href="{{ url_for('event_detail_page', event_id=event.event_id) }}">
+                <strong>{{ event.species_common_name }}</strong>
+                <span>{{ event.node_id }} · {{ event.event_start_utc|utc_display }}</span>
+              </a>
+              <span class="metric-pill">{{ '%.2f'|format(event.confidence) }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty-state">No events have been stored yet.</p>
+      {% endif %}
+    </article>
+  </section>
+{% endblock %}

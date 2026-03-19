@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}{{ node.display_name }} · bird-hub{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <p class="eyebrow">Node detail</p>
+      <h2>{{ node.display_name }}</h2>
+      <p class="muted">{{ node.node_id }}</p>
+    </div>
+  </section>
+
+  <section class="card-grid card-grid--stats">
+    <article class="card stat-card">
+      <span>Location</span>
+      <strong>{{ node.location_name or "-" }}</strong>
+    </article>
+    <article class="card stat-card">
+      <span>Last Seen</span>
+      <strong>{{ node.last_seen_at|utc_display }}</strong>
+    </article>
+    <article class="card stat-card">
+      <span>App Version</span>
+      <strong>{{ node.last_app_version or "-" }}</strong>
+    </article>
+    <article class="card stat-card">
+      <span>BirdNET</span>
+      <strong>{{ node.last_birdnet_version or "-" }}</strong>
+    </article>
+  </section>
+
+  <section class="two-column-layout">
+    <article class="card">
+      <div class="section-heading">
+        <h3>Latest Health Snapshot</h3>
+        <span class="muted">{{ node.latest_health_snapshot.captured_at_utc|utc_display if node.latest_health_snapshot else '-' }}</span>
+      </div>
+      {% if node.latest_health_snapshot %}
+        <pre class="json-block">{{ node.latest_health_snapshot.snapshot | tojson(indent=2) }}</pre>
+      {% else %}
+        <p class="empty-state">No health snapshots have been ingested for this node yet.</p>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <h3>Species Summary</h3>
+        <span class="muted">{{ species_stats|length }} species</span>
+      </div>
+      {% if species_stats %}
+        <ul class="species-list">
+          {% for item in species_stats %}
+            <li>
+              <div>
+                <strong>{{ item.species_common_name }}</strong>
+                {% if item.species_scientific_name %}
+                  <span>{{ item.species_scientific_name }}</span>
+                {% endif %}
+              </div>
+              <div class="stack-right">
+                <span class="metric-pill">{{ item.detection_count }} detections</span>
+                <span class="muted">best {{ '%.2f'|format(item.best_confidence) }}</span>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty-state">No bird detections from this node have been ingested yet.</p>
+      {% endif %}
+    </article>
+  </section>
+
+  <section class="two-column-layout">
+    <article class="card">
+      <div class="section-heading">
+        <h3>Recent Events</h3>
+        <a href="{{ url_for('events_page', node_id=node.node_id) }}">Open filtered events</a>
+      </div>
+      {% if recent_events %}
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Species</th>
+                <th>Confidence</th>
+                <th>Clip</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for event in recent_events %}
+                <tr>
+                  <td>{{ event.event_start_utc|utc_display }}</td>
+                  <td><a href="{{ url_for('event_detail_page', event_id=event.event_id) }}">{{ event.species_common_name }}</a></td>
+                  <td>{{ '%.2f'|format(event.confidence) }}</td>
+                  <td>
+                    {% if event.clip %}
+                      <a href="{{ url_for('api_event_clip', event_id=event.event_id) }}">Play / download</a>
+                    {% else %}
+                      -
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="empty-state">No events stored for this node yet.</p>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <h3>Recent Health Snapshots</h3>
+        <span class="muted">{{ health_snapshots|length }} shown</span>
+      </div>
+      {% if health_snapshots %}
+        <div class="snapshot-list">
+          {% for snapshot in health_snapshots %}
+            <details>
+              <summary>{{ snapshot.captured_at_utc|utc_display }}</summary>
+              <pre class="json-block">{{ snapshot.snapshot | tojson(indent=2) }}</pre>
+            </details>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty-state">No health snapshots stored for this node yet.</p>
+      {% endif %}
+    </article>
+  </section>
+{% endblock %}

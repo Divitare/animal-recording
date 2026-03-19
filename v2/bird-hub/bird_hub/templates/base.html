@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}bird-hub{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-header__inner">
+        <div>
+          <p class="eyebrow">Bird Monitor</p>
+          <h1 class="site-title"><a href="{{ url_for('dashboard') }}">bird-hub</a></h1>
+        </div>
+        <nav class="site-nav">
+          <a href="{{ url_for('dashboard') }}">Dashboard</a>
+          <a href="{{ url_for('nodes_page') }}">Nodes</a>
+          <a href="{{ url_for('events_page') }}">Events</a>
+        </nav>
+        <div class="version-badge">
+          <span>{{ app_variant }}</span>
+          <strong>{{ app_commit }}</strong>
+        </div>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <section class="flash-stack">
+            {% for category, message in messages %}
+              <div class="flash flash--{{ category }}">{{ message }}</div>
+            {% endfor %}
+          </section>
+        {% endif %}
+      {% endwith %}
+
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

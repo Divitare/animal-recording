@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Nodes · bird-hub{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <p class="eyebrow">Fleet overview</p>
+      <h2>Nodes</h2>
+    </div>
+  </section>
+
+  {% if nodes %}
+    <section class="card-grid">
+      {% for node in nodes %}
+        <article class="card node-card">
+          <div class="section-heading">
+            <div>
+              <h3><a href="{{ url_for('node_detail_page', node_id=node.node_id) }}">{{ node.display_name }}</a></h3>
+              <p class="muted">{{ node.node_id }}</p>
+            </div>
+            <span class="status status--{{ 'active' if node.active else 'inactive' }}">{{ 'active' if node.active else 'inactive' }}</span>
+          </div>
+          <dl class="detail-list">
+            <div><dt>Location</dt><dd>{{ node.location_name or "-" }}</dd></div>
+            <div><dt>Last seen</dt><dd>{{ node.last_seen_at|utc_display }}</dd></div>
+            <div><dt>Last detection</dt><dd>{{ node.last_detection_at|utc_display }}</dd></div>
+            <div><dt>Total detections</dt><dd>{{ node.detection_count_total }}</dd></div>
+            <div><dt>Version</dt><dd>{{ node.last_app_version or "-" }}</dd></div>
+            <div><dt>BirdNET</dt><dd>{{ node.last_birdnet_version or "-" }}</dd></div>
+          </dl>
+          {% if node.health_summary %}
+            <div class="badge-row">
+              <span class="metric-pill">Mic: {{ node.health_summary.microphone_status or "-" }}</span>
+              <span class="metric-pill">BirdNET: {{ node.health_summary.birdnet_status or "-" }}</span>
+              <span class="metric-pill">System: {{ node.health_summary.system_status or "-" }}</span>
+            </div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="card">
+      <p class="empty-state">No nodes are known to the hub yet. Upload a node export zip on the dashboard to get started.</p>
+    </section>
+  {% endif %}
+{% endblock %}

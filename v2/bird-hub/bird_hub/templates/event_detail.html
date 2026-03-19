@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ event.species_common_name }} · {{ event.event_id }}{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <p class="eyebrow">Bird event</p>
+      <h2>{{ event.species_common_name }}</h2>
+      <p class="muted">{{ event.event_id }}</p>
+    </div>
+  </section>
+
+  <section class="card-grid card-grid--stats">
+    <article class="card stat-card">
+      <span>Node</span>
+      <strong><a href="{{ url_for('node_detail_page', node_id=event.node_id) }}">{{ event.node_id }}</a></strong>
+    </article>
+    <article class="card stat-card">
+      <span>Confidence</span>
+      <strong>{{ '%.2f'|format(event.confidence) }}</strong>
+    </article>
+    <article class="card stat-card">
+      <span>Start UTC</span>
+      <strong>{{ event.event_start_utc|utc_display }}</strong>
+    </article>
+    <article class="card stat-card">
+      <span>End UTC</span>
+      <strong>{{ event.event_end_utc|utc_display }}</strong>
+    </article>
+  </section>
+
+  <section class="two-column-layout">
+    <article class="card">
+      <div class="section-heading">
+        <h3>Clip</h3>
+        {% if event.clip %}
+          <a href="{{ url_for('api_event_clip', event_id=event.event_id) }}">Download clip</a>
+        {% endif %}
+      </div>
+      {% if event.clip %}
+        <audio controls preload="none" class="audio-player">
+          <source src="{{ url_for('api_event_clip', event_id=event.event_id) }}" type="audio/wav">
+        </audio>
+        <dl class="detail-list">
+          <div><dt>Duration</dt><dd>{{ event.clip.duration_seconds or '-' }}</dd></div>
+          <div><dt>Sample rate</dt><dd>{{ event.clip.sample_rate or '-' }}</dd></div>
+          <div><dt>Channels</dt><dd>{{ event.clip.channels or '-' }}</dd></div>
+          <div><dt>Size</dt><dd>{{ event.clip.size_bytes|filesize }}</dd></div>
+        </dl>
+      {% else %}
+        <p class="empty-state">No clip file was attached to this event.</p>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <h3>Metadata</h3>
+      </div>
+      <dl class="detail-list">
+        <div><dt>Scientific name</dt><dd>{{ event.species_scientific_name or '-' }}</dd></div>
+        <div><dt>Location</dt><dd>{{ event.location_name or '-' }}</dd></div>
+        <div><dt>Latitude</dt><dd>{{ event.latitude or '-' }}</dd></div>
+        <div><dt>Longitude</dt><dd>{{ event.longitude or '-' }}</dd></div>
+        <div><dt>Time source</dt><dd>{{ event.time_source or '-' }}</dd></div>
+        <div><dt>UTC available</dt><dd>{{ 'yes' if event.utc_available else 'no' }}</dd></div>
+        <div><dt>Analysis duration</dt><dd>{{ event.analysis_duration_seconds or '-' }}</dd></div>
+        <div><dt>BirdNET backend</dt><dd>{{ event.runtime_backend or '-' }}</dd></div>
+        <div><dt>BirdNET version</dt><dd>{{ event.birdnet_version or '-' }}</dd></div>
+        <div><dt>App version</dt><dd>{{ event.app_version or '-' }}</dd></div>
+      </dl>
+    </article>
+  </section>
+
+  <section class="card">
+    <div class="section-heading">
+      <h3>Health Snapshot Near Detection</h3>
+    </div>
+    {% if event.health_snapshot %}
+      <pre class="json-block">{{ event.health_snapshot.snapshot | tojson(indent=2) }}</pre>
+    {% else %}
+      <p class="empty-state">No linked health snapshot is stored for this event.</p>
+    {% endif %}
+  </section>
+{% endblock %}

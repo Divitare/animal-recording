@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Events · bird-hub{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <p class="eyebrow">Bird detections</p>
+      <h2>Events</h2>
+    </div>
+  </section>
+
+  <section class="card">
+    <form class="filter-form" method="get" action="{{ url_for('events_page') }}">
+      <label>
+        Node
+        <select name="node_id">
+          <option value="">All nodes</option>
+          {% for node in nodes %}
+            <option value="{{ node.node_id }}" {% if filters.node_id == node.node_id %}selected{% endif %}>{{ node.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Species
+        <input type="text" name="species" value="{{ filters.species or '' }}" placeholder="e.g. blackbird">
+      </label>
+      <label>
+        Min confidence
+        <input type="number" name="min_confidence" min="0" max="1" step="0.01" value="{{ filters.min_confidence }}">
+      </label>
+      <label>
+        Since UTC
+        <input type="text" name="since_utc" value="{{ filters.since_utc or '' }}" placeholder="2026-03-19T00:00:00Z">
+      </label>
+      <label>
+        Until UTC
+        <input type="text" name="until_utc" value="{{ filters.until_utc or '' }}" placeholder="2026-03-20T00:00:00Z">
+      </label>
+      <label>
+        Limit
+        <input type="number" name="limit" min="1" max="1000" value="{{ filters.limit }}">
+      </label>
+      <button type="submit">Apply filters</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="section-heading">
+      <h3>Matching Events</h3>
+      <span class="muted">{{ events|length }} shown</span>
+    </div>
+    {% if events %}
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Start</th>
+              <th>Node</th>
+              <th>Species</th>
+              <th>Confidence</th>
+              <th>Clip</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for event in events %}
+              <tr>
+                <td>{{ event.event_start_utc|utc_display }}</td>
+                <td><a href="{{ url_for('node_detail_page', node_id=event.node_id) }}">{{ event.node_id }}</a></td>
+                <td><a href="{{ url_for('event_detail_page', event_id=event.event_id) }}">{{ event.species_common_name }}</a></td>
+                <td>{{ '%.2f'|format(event.confidence) }}</td>
+                <td>
+                  {% if event.clip %}
+                    <a href="{{ url_for('api_event_clip', event_id=event.event_id) }}">Play / download</a>
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty-state">No events match the current filters.</p>
+    {% endif %}
+  </section>
+{% endblock %}
