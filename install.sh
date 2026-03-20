@@ -834,6 +834,10 @@ stop_process_if_running() {
     fi
     rm -f "${PID_FILE}"
   fi
+
+  if [[ -n "${STATUS_FILE}" ]]; then
+    rm -f "${STATUS_FILE}" || true
+  fi
 }
 
 start_service() {
@@ -854,7 +858,8 @@ start_service() {
 }
 
 verify_headless_node_service() {
-  local expected_commit actual_commit started_flag species_available_flag attempt
+  local expected_commit actual_commit started_flag species_available_flag status_message attempt
+  local last_actual_commit="" last_started_flag="" last_species_available_flag="" last_status_message=""
   expected_commit="$(cat "${RELEASE_COMMIT_FILE}" 2>/dev/null || true)"
 
   for attempt in $(seq 1 60); do
@@ -889,7 +894,21 @@ payload = json.loads(Path(os.environ["STATUS_JSON_PATH"]).read_text(encoding="ut
 print(str(bool((payload.get("service") or {}).get("species_available"))))
 PY
       )"
-      if [[ "${started_flag}" == "True" && "${species_available_flag}" == "True" && ( -z "${expected_commit}" || "${actual_commit}" == "${expected_commit}" ) ]]; then
+      status_message="$(
+        STATUS_JSON_PATH="${STATUS_FILE}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(Path(os.environ["STATUS_JSON_PATH"]).read_text(encoding="utf-8"))
+print(str(((payload.get("service") or {}).get("message")) or ""))
+PY
+      )"
+      last_actual_commit="${actual_commit}"
+      last_started_flag="${started_flag}"
+      last_species_available_flag="${species_available_flag}"
+      last_status_message="${status_message}"
+      if [[ "${started_flag}" == "True" && ( -z "${expected_commit}" || "${actual_commit}" == "${expected_commit}" ) ]]; then
         log "Verified headless node status file: ${STATUS_FILE}"
         return
       fi
@@ -897,6 +916,9 @@ PY
     sleep 2
   done
 
+  if [[ -n "${last_actual_commit}" || -n "${last_started_flag}" || -n "${last_species_available_flag}" || -n "${last_status_message}" ]]; then
+    warn "Latest node status file values: commit=${last_actual_commit:-unknown} started=${last_started_flag:-unknown} species_available=${last_species_available_flag:-unknown} message=${last_status_message:-unknown}"
+  fi
   die "The bird-node service did not become ready at ${STATUS_FILE} after installation. Check 'systemctl status ${SERVICE_NAME}' and 'journalctl -u ${SERVICE_NAME} -n 100 --no-pager'."
 }
 
