@@ -28,6 +28,42 @@ def ensure_audio_runtime() -> None:
         ) from AUDIO_IMPORT_ERROR
 
 
+def _refresh_portaudio_device_state() -> bool:
+    ensure_audio_runtime()
+    terminate = getattr(sd, "_terminate", None)
+    initialize = getattr(sd, "_initialize", None)
+    if not callable(terminate) or not callable(initialize):
+        return False
+
+    try:
+        terminate()
+    except Exception:
+        pass
+
+    try:
+        initialize()
+    except Exception:
+        return False
+    return True
+
+
+def _query_devices_with_refresh() -> list[object]:
+    ensure_audio_runtime()
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        if not _refresh_portaudio_device_state():
+            raise
+        devices = sd.query_devices()
+
+    if any(int(device["max_input_channels"]) > 0 for device in devices):
+        return list(devices)
+
+    if _refresh_portaudio_device_state():
+        devices = sd.query_devices()
+    return list(devices)
+
+
 @dataclass(frozen=True)
 class AudioCapture:
     samples: np.ndarray
@@ -60,7 +96,7 @@ class LiveAudioChunk:
 
 def list_input_devices() -> list[dict[str, object]]:
     ensure_audio_runtime()
-    devices = sd.query_devices()
+    devices = _query_devices_with_refresh()
     items: list[dict[str, object]] = []
     for index, device in enumerate(devices):
         max_input_channels = int(device["max_input_channels"])
