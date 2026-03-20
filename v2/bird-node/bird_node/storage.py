@@ -31,6 +31,27 @@ def _zero_metric_totals() -> dict[str, float | int]:
     return payload
 
 
+def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    return {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table_name})")
+    }
+
+
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_definitions: dict[str, str],
+) -> set[str]:
+    existing_columns = _table_columns(connection, table_name)
+    for column_name, column_definition in column_definitions.items():
+        if column_name in existing_columns:
+            continue
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+        existing_columns.add(column_name)
+    return existing_columns
+
+
 class BirdNodeStorage:
     def __init__(self, database_path: Path, status_file: Path) -> None:
         self._database_path = database_path
@@ -64,7 +85,6 @@ class BirdNodeStorage:
                     longitude REAL,
                     created_at TEXT NOT NULL
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id ON detections(event_id);
                 CREATE INDEX IF NOT EXISTS idx_detections_started_at ON detections(started_at);
                 CREATE INDEX IF NOT EXISTS idx_detections_species ON detections(species_common_name);
                 CREATE TABLE IF NOT EXISTS node_metrics (
@@ -123,33 +143,113 @@ class BirdNodeStorage:
                     detection_ids_json TEXT NOT NULL DEFAULT '[]',
                     health_snapshot_ids_json TEXT NOT NULL DEFAULT '[]'
                 );
-                CREATE INDEX IF NOT EXISTS idx_sync_batches_status_retry ON sync_batches(status, next_retry_at, created_at);
                 """
             )
-            columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(detections)")
-            }
-            if "event_id" not in columns:
-                connection.execute("ALTER TABLE detections ADD COLUMN event_id TEXT")
-                connection.execute("UPDATE detections SET event_id = 'legacy-' || id WHERE event_id IS NULL")
-                connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id ON detections(event_id)")
-            if "queued_batch_id" not in columns:
-                connection.execute("ALTER TABLE detections ADD COLUMN queued_batch_id INTEGER")
-            if "queued_at" not in columns:
-                connection.execute("ALTER TABLE detections ADD COLUMN queued_at TEXT")
-            if "synced_at" not in columns:
-                connection.execute("ALTER TABLE detections ADD COLUMN synced_at TEXT")
-            snapshot_columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(health_snapshots)")
-            }
-            if "queued_batch_id" not in snapshot_columns:
-                connection.execute("ALTER TABLE health_snapshots ADD COLUMN queued_batch_id INTEGER")
-            if "queued_at" not in snapshot_columns:
-                connection.execute("ALTER TABLE health_snapshots ADD COLUMN queued_at TEXT")
-            if "synced_at" not in snapshot_columns:
-                connection.execute("ALTER TABLE health_snapshots ADD COLUMN synced_at TEXT")
+            _ensure_columns(
+                connection,
+                "detections",
+                {
+                    "event_id": "TEXT",
+                    "source_window_started_at": "TEXT NOT NULL DEFAULT ''",
+                    "source_window_ended_at": "TEXT NOT NULL DEFAULT ''",
+                    "analysis_duration_seconds": "REAL",
+                    "location_name": "TEXT",
+                    "latitude": "REAL",
+                    "longitude": "REAL",
+                    "created_at": "TEXT NOT NULL DEFAULT ''",
+                    "queued_batch_id": "INTEGER",
+                    "queued_at": "TEXT",
+                    "synced_at": "TEXT",
+                },
+            )
+            connection.execute("UPDATE detections SET event_id = 'legacy-' || id WHERE COALESCE(event_id, '') = ''")
+            connection.execute("UPDATE detections SET created_at = COALESCE(NULLIF(created_at, ''), started_at)")
+            connection.execute(
+                """
+                UPDATE detections
+                SET source_window_started_at = COALESCE(NULLIF(source_window_started_at, ''), started_at)
+                """
+            )
+            connection.execute(
+                """
+                UPDATE detections
+                SET source_window_ended_at = COALESCE(NULLIF(source_window_ended_at, ''), ended_at)
+                """
+            )
+            connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id ON detections(event_id)")
+
+            _ensure_columns(
+                connection,
+                "node_metrics",
+                {
+                    "total_recorded_seconds": "REAL NOT NULL DEFAULT 0",
+                    "total_analyzed_seconds": "REAL NOT NULL DEFAULT 0",
+                    "total_microphone_uptime_seconds": "REAL NOT NULL DEFAULT 0",
+                    "total_detection_count": "INTEGER NOT NULL DEFAULT 0",
+                    "total_birdnet_success_count": "INTEGER NOT NULL DEFAULT 0",
+                    "total_birdnet_failure_count": "INTEGER NOT NULL DEFAULT 0",
+                    "total_clipping_event_count": "INTEGER NOT NULL DEFAULT 0",
+                    "total_silence_event_count": "INTEGER NOT NULL DEFAULT 0",
+                    "total_overflow_event_count": "INTEGER NOT NULL DEFAULT 0",
+                    "updated_at": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
+            _ensure_columns(
+                connection,
+                "daily_metrics",
+                {
+                    "recorded_seconds": "REAL NOT NULL DEFAULT 0",
+                    "analyzed_seconds": "REAL NOT NULL DEFAULT 0",
+                    "microphone_uptime_seconds": "REAL NOT NULL DEFAULT 0",
+                    "detection_count": "INTEGER NOT NULL DEFAULT 0",
+                    "birdnet_success_count": "INTEGER NOT NULL DEFAULT 0",
+                    "birdnet_failure_count": "INTEGER NOT NULL DEFAULT 0",
+                    "clipping_event_count": "INTEGER NOT NULL DEFAULT 0",
+                    "silence_event_count": "INTEGER NOT NULL DEFAULT 0",
+                    "overflow_event_count": "INTEGER NOT NULL DEFAULT 0",
+                    "updated_at": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
+
+            _ensure_columns(
+                connection,
+                "health_snapshots",
+                {
+                    "time_source": "TEXT NOT NULL DEFAULT 'system'",
+                    "time_synchronized": "INTEGER NOT NULL DEFAULT 0",
+                    "app_commit": "TEXT",
+                    "runtime_backend": "TEXT",
+                    "birdnet_version": "TEXT",
+                    "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "queued_batch_id": "INTEGER",
+                    "queued_at": "TEXT",
+                    "synced_at": "TEXT",
+                },
+            )
+
+            _ensure_columns(
+                connection,
+                "sync_batches",
+                {
+                    "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                    "last_attempt_at": "TEXT",
+                    "next_retry_at": "TEXT",
+                    "synced_at": "TEXT",
+                    "last_error": "TEXT",
+                    "response_json": "TEXT",
+                    "detection_count": "INTEGER NOT NULL DEFAULT 0",
+                    "health_snapshot_count": "INTEGER NOT NULL DEFAULT 0",
+                    "detection_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "health_snapshot_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+                },
+            )
+            connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id ON detections(event_id)")
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_sync_batches_status_retry
+                ON sync_batches(status, next_retry_at, created_at)
+                """
+            )
             connection.execute(
                 """
                 INSERT OR IGNORE INTO node_metrics (

@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "summary": {
+    "failed_batch_count": 0,
+    "last_attempt_at": null,
+    "last_batch_status": null,
+    "last_error": null,
+    "last_successful_sync_at": null,
+    "queued_batch_count": 0,
+    "synced_batch_count": 0,
+    "unsynced_detection_count": 0,
+    "unsynced_health_snapshot_count": 1
+  }
+}
