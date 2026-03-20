@@ -458,6 +458,8 @@ ensure_env_file() {
   set_stage "Ensuring environment configuration"
   local existing_host=""
   local existing_port=""
+  local existing_sync_interval=""
+  local existing_sync_retry=""
   local default_node_id=""
   local default_sample_rate="32000"
   mkdir -p "$(dirname "${ENV_FILE}")"
@@ -501,8 +503,8 @@ BIRD_MONITOR_LATITUDE=
 BIRD_MONITOR_LONGITUDE=
 BIRD_MONITOR_HUB_URL=
 BIRD_MONITOR_HUB_TOKEN=
-BIRD_MONITOR_SYNC_INTERVAL_SECONDS=60
-BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS=60
+BIRD_MONITOR_SYNC_INTERVAL_SECONDS=1800
+BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS=300
 BIRD_MONITOR_SYNC_MAX_EVENTS_PER_BUNDLE=25
 BIRD_MONITOR_SYNC_MAX_HEALTH_SNAPSHOTS_PER_BUNDLE=12
 BIRD_MONITOR_ALLOW_UNAUTHENTICATED_INGEST=true
@@ -515,6 +517,8 @@ EOF
 
   existing_host="$(read_env_value 'BIRD_MONITOR_HOST' "${ENV_FILE}" 2>/dev/null || true)"
   existing_port="$(read_env_value 'BIRD_MONITOR_PORT' "${ENV_FILE}" 2>/dev/null || true)"
+  existing_sync_interval="$(read_env_value 'BIRD_MONITOR_SYNC_INTERVAL_SECONDS' "${ENV_FILE}" 2>/dev/null || true)"
+  existing_sync_retry="$(read_env_value 'BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS' "${ENV_FILE}" 2>/dev/null || true)"
 
   set_env_value "BIRD_MONITOR_APP_VARIANT" "${INSTALL_VARIANT}" "${ENV_FILE}"
   set_env_value "BIRD_MONITOR_HOST" "${existing_host:-0.0.0.0}" "${ENV_FILE}"
@@ -547,8 +551,14 @@ EOF
   grep -q '^BIRD_MONITOR_LONGITUDE=' "${ENV_FILE}" || echo "BIRD_MONITOR_LONGITUDE=" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_HUB_URL=' "${ENV_FILE}" || echo "BIRD_MONITOR_HUB_URL=" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_HUB_TOKEN=' "${ENV_FILE}" || echo "BIRD_MONITOR_HUB_TOKEN=" >> "${ENV_FILE}"
-  grep -q '^BIRD_MONITOR_SYNC_INTERVAL_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SYNC_INTERVAL_SECONDS=60" >> "${ENV_FILE}"
-  grep -q '^BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS=60" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_SYNC_INTERVAL_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SYNC_INTERVAL_SECONDS=1800" >> "${ENV_FILE}"
+  grep -q '^BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS=' "${ENV_FILE}" || echo "BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS=300" >> "${ENV_FILE}"
+  if [[ -z "${existing_sync_interval}" || "${existing_sync_interval}" == "60" ]]; then
+    set_env_value "BIRD_MONITOR_SYNC_INTERVAL_SECONDS" "1800" "${ENV_FILE}"
+  fi
+  if [[ -z "${existing_sync_retry}" || "${existing_sync_retry}" == "60" ]]; then
+    set_env_value "BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS" "300" "${ENV_FILE}"
+  fi
   grep -q '^BIRD_MONITOR_SYNC_MAX_EVENTS_PER_BUNDLE=' "${ENV_FILE}" || echo "BIRD_MONITOR_SYNC_MAX_EVENTS_PER_BUNDLE=25" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_SYNC_MAX_HEALTH_SNAPSHOTS_PER_BUNDLE=' "${ENV_FILE}" || echo "BIRD_MONITOR_SYNC_MAX_HEALTH_SNAPSHOTS_PER_BUNDLE=12" >> "${ENV_FILE}"
   grep -q '^BIRD_MONITOR_ALLOW_UNAUTHENTICATED_INGEST=' "${ENV_FILE}" || echo "BIRD_MONITOR_ALLOW_UNAUTHENTICATED_INGEST=true" >> "${ENV_FILE}"

@@ -242,7 +242,10 @@ def ingest_bundle_file(
 
         return {
             "status": "ok",
+            "acknowledged": True,
             "node_id": node_id,
+            "ingest_batch_id": batch_id,
+            "received_at_utc": received_at,
             "archive_filename": archive_filename,
             "archive_sha256": archive_sha256,
             "processed_event_count": processed_events,

@@ -21,7 +21,9 @@ Current behavior:
 - stores a persistent health snapshot at least every 5 minutes
 - can export bird events, matching clips, and the nearest health snapshot as a zip archive with `python -m bird_node export-events`
 - can queue and upload offline-first sync bundles to `bird-hub` over WLAN or Ethernet when `BIRD_MONITOR_HUB_URL` is configured
-- retries failed uploads automatically and reports sync health in `status.json`
+- tries regular hub uploads every 30 minutes and retries failed batches every 5 minutes by default
+- deletes acknowledged local clips, detections, and uploaded health snapshots after the hub confirms receipt
+- reports sync health in `status.json`
 
 Example export command:
 

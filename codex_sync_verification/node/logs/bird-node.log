@@ -1,0 +1,4 @@
+2026-03-20 15:28:57,774 INFO [bird_node] Prepared sync batch id=1 detections=1 health_snapshots=1 path=C:\Users\Maximilian\Documents\Arbeit\Projekte\vs_code\animal-recording\codex_sync_verification\node\sync-queue\batch-000001.zip
+2026-03-20 15:28:57,870 INFO [bird_node] Uploaded sync batch id=1 detections=1 health_snapshots=1 acknowledged=True deleted_detections=1 deleted_clips=1 deleted_health_snapshots=1
+2026-03-20 15:28:57,998 INFO [bird_node] Prepared sync batch id=1 detections=1 health_snapshots=0 path=C:\Users\Maximilian\Documents\Arbeit\Projekte\vs_code\animal-recording\codex_sync_verification\node-failure\sync-queue\batch-000001.zip
+2026-03-20 15:28:58,014 WARNING [bird_node] Hub upload failed for batch id=1. Retrying after 300.0s. error=network down

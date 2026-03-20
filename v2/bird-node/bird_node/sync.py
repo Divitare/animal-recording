@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import threading
 import time
 from datetime import datetime, timedelta
@@ -65,12 +64,36 @@ class BirdNodeSyncManager:
         now = datetime.utcnow()
         batch = self.storage.get_next_sync_batch(now_utc=utc_iso(now) or "")
         if batch is None:
-            batch = self._create_next_batch()
-            if batch is None:
+            summary = self.storage.get_sync_summary()
+            if int(summary.get("queued_batch_count") or 0) > 0:
+                self._update_state(
+                    last_error=None,
+                    message="A queued hub upload batch is waiting for its next retry window.",
+                )
+                return
+
+            unsynced_detection_count = int(summary.get("unsynced_detection_count") or 0)
+            unsynced_health_snapshot_count = int(summary.get("unsynced_health_snapshot_count") or 0)
+            if unsynced_detection_count == 0 and unsynced_health_snapshot_count == 0:
                 self._update_state(
                     last_error=None,
                     message="Hub sync is idle. No unsynced detections or health snapshots are queued.",
                 )
+                return
+
+            next_regular_attempt_at = self._next_regular_attempt_at()
+            if next_regular_attempt_at is not None and now < next_regular_attempt_at:
+                self._update_state(
+                    last_error=None,
+                    message=(
+                        "Waiting until "
+                        f"{utc_iso(next_regular_attempt_at)} for the next scheduled hub upload attempt."
+                    ),
+                )
+                return
+
+            batch = self._create_next_batch()
+            if batch is None:
                 return
 
         self._upload_batch(batch)
@@ -92,13 +115,18 @@ class BirdNodeSyncManager:
                 "unsynced_detection_count": summary.get("unsynced_detection_count"),
                 "unsynced_health_snapshot_count": summary.get("unsynced_health_snapshot_count"),
                 "last_batch_status": summary.get("last_batch_status"),
+                "last_batch_created_at": summary.get("last_batch_created_at"),
+                "regular_upload_interval_seconds": self.config.sync_interval_seconds,
+                "retry_interval_seconds": self.config.sync_retry_base_seconds,
+                "next_regular_attempt_at": utc_iso(self._next_regular_attempt_at()),
             }
 
     def _run_loop(self) -> None:
         self.logger.info(
-            "Starting hub sync manager hub_url=%s interval_seconds=%.1f",
+            "Starting hub sync manager hub_url=%s regular_interval_seconds=%.1f retry_interval_seconds=%.1f",
             self.config.hub_url,
             self.config.sync_interval_seconds,
+            self.config.sync_retry_base_seconds,
         )
         while not self.stop_event.is_set():
             try:
@@ -106,7 +134,7 @@ class BirdNodeSyncManager:
             except Exception as exc:  # pragma: no cover - defensive runtime guard
                 self.logger.exception("Unexpected hub sync failure.")
                 self._update_state(last_error=str(exc), message=f"Hub sync failed unexpectedly: {exc}")
-            if self.stop_event.wait(max(self.config.sync_interval_seconds, 5.0)):
+            if self.stop_event.wait(self._loop_wait_seconds()):
                 break
 
     def _create_next_batch(self) -> dict[str, Any] | None:
@@ -188,32 +216,41 @@ class BirdNodeSyncManager:
                 raise RuntimeError(f"Hub upload failed with HTTP {response.status_code}: {message}")
 
             payload = response.json()
+            if not bool(payload.get("acknowledged")):
+                raise RuntimeError("Hub upload did not return an explicit acknowledgment.")
             synced_at = datetime.utcnow()
             self.storage.mark_sync_batch_synced(
                 batch_id,
                 synced_at=utc_iso(synced_at) or "",
                 response_payload=payload,
             )
+            cleanup_summary = self.storage.purge_uploaded_records(
+                detection_ids=[int(item) for item in list(batch.get("detection_ids") or [])],
+                health_snapshot_ids=[int(item) for item in list(batch.get("health_snapshot_ids") or [])],
+            )
             try:
                 batch_path.unlink(missing_ok=True)
             except OSError:
                 pass
             self.logger.info(
-                "Uploaded sync batch id=%s detections=%s health_snapshots=%s",
+                "Uploaded sync batch id=%s detections=%s health_snapshots=%s acknowledged=%s deleted_detections=%s deleted_clips=%s deleted_health_snapshots=%s",
                 batch_id,
                 batch.get("detection_count"),
                 batch.get("health_snapshot_count"),
+                payload.get("acknowledged"),
+                cleanup_summary.get("deleted_detection_count"),
+                cleanup_summary.get("deleted_clip_count"),
+                cleanup_summary.get("deleted_health_snapshot_count"),
             )
             self._update_state(
                 current_batch_id=None,
                 last_attempt_at=attempted_at,
                 last_successful_sync_at=synced_at,
                 last_error=None,
-                message=f"Uploaded sync batch {batch_id} successfully.",
+                message=f"Uploaded sync batch {batch_id} successfully and deleted the acknowledged local payload.",
             )
         except Exception as exc:
-            attempt_number = int(batch.get("attempt_count") or 0) + 1
-            backoff_seconds = self.config.sync_retry_base_seconds * max(1.0, math.pow(2.0, max(attempt_number - 1, 0)))
+            backoff_seconds = max(self.config.sync_retry_base_seconds, 5.0)
             next_retry_at = attempted_at + timedelta(seconds=backoff_seconds)
             self.storage.mark_sync_batch_failed(
                 batch_id,
@@ -233,6 +270,20 @@ class BirdNodeSyncManager:
                 last_error=str(exc),
                 message=f"Sync batch {batch_id} failed and will retry later.",
             )
+
+    def _loop_wait_seconds(self) -> float:
+        return max(min(self.config.sync_interval_seconds, self.config.sync_retry_base_seconds, 300.0), 5.0)
+
+    def _next_regular_attempt_at(self) -> datetime | None:
+        last_created_at_raw = self.storage.get_last_sync_batch_created_at()
+        if not last_created_at_raw:
+            return None
+        try:
+            normalized = last_created_at_raw[:-1] if last_created_at_raw.endswith("Z") else last_created_at_raw
+            last_created_at = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        return last_created_at + timedelta(seconds=max(self.config.sync_interval_seconds, 0.0))
 
     def _update_state(
         self,

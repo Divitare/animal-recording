@@ -938,6 +938,82 @@ class BirdNodeStorage:
                     (synced_at, synced_at, json.dumps(response_payload), batch_id),
                 )
 
+    def purge_uploaded_records(
+        self,
+        *,
+        detection_ids: list[int],
+        health_snapshot_ids: list[int],
+    ) -> dict[str, int]:
+        clip_paths: list[Path] = []
+        deleted_detection_count = 0
+        deleted_health_snapshot_count = 0
+
+        with self._lock:
+            with self._connect() as connection:
+                if detection_ids:
+                    placeholders = ",".join("?" for _ in detection_ids)
+                    rows = connection.execute(
+                        f"""
+                        SELECT id, clip_file_path
+                        FROM detections
+                        WHERE id IN ({placeholders}) AND synced_at IS NOT NULL
+                        """,
+                        tuple(detection_ids),
+                    ).fetchall()
+                    clip_paths = [
+                        Path(str(row["clip_file_path"]))
+                        for row in rows
+                        if row["clip_file_path"]
+                    ]
+                    deleted_detection_count = len(rows)
+                    connection.execute(
+                        f"""
+                        DELETE FROM detections
+                        WHERE id IN ({placeholders}) AND synced_at IS NOT NULL
+                        """,
+                        tuple(detection_ids),
+                    )
+
+                if health_snapshot_ids:
+                    placeholders = ",".join("?" for _ in health_snapshot_ids)
+                    cursor = connection.execute(
+                        f"""
+                        DELETE FROM health_snapshots
+                        WHERE id IN ({placeholders}) AND synced_at IS NOT NULL
+                        """,
+                        tuple(health_snapshot_ids),
+                    )
+                    deleted_health_snapshot_count = int(cursor.rowcount or 0)
+
+        deleted_clip_count = 0
+        for clip_path in clip_paths:
+            try:
+                clip_path.unlink(missing_ok=True)
+                deleted_clip_count += 1
+            except OSError:
+                continue
+
+        return {
+            "deleted_detection_count": deleted_detection_count,
+            "deleted_health_snapshot_count": deleted_health_snapshot_count,
+            "deleted_clip_count": deleted_clip_count,
+        }
+
+    def get_last_sync_batch_created_at(self) -> str | None:
+        with self._lock:
+            with self._connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT created_at
+                    FROM sync_batches
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+        if row is None:
+            return None
+        return str(row["created_at"] or "") or None
+
     def get_sync_summary(self) -> dict[str, Any]:
         with self._lock:
             with self._connect() as connection:
@@ -956,6 +1032,7 @@ class BirdNodeStorage:
                     SELECT
                         synced_at,
                         last_attempt_at,
+                        created_at,
                         last_error,
                         status
                     FROM sync_batches
@@ -971,6 +1048,7 @@ class BirdNodeStorage:
             "synced_batch_count": int(counts_row["synced_batch_count"] if counts_row is not None else 0),
             "last_successful_sync_at": (last_row["synced_at"] if last_row is not None else None),
             "last_attempt_at": (last_row["last_attempt_at"] if last_row is not None else None),
+            "last_batch_created_at": (last_row["created_at"] if last_row is not None else None),
             "last_error": (last_row["last_error"] if last_row is not None else None),
             "last_batch_status": (last_row["status"] if last_row is not None else None),
         }
