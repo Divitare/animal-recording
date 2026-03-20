@@ -88,7 +88,11 @@ def load_config() -> BirdNodeConfig:
 
     package_root = Path(__file__).resolve().parent.parent
     commit_file = package_root / ".release-commit"
-    app_commit = commit_file.read_text(encoding="utf-8").strip() if commit_file.exists() else "unknown"
+    app_commit = (
+        os.getenv("BIRD_MONITOR_APP_COMMIT", "").strip()
+        or (commit_file.read_text(encoding="utf-8").strip() if commit_file.exists() else "")
+        or "unknown"
+    )
 
     data_dir = Path(os.getenv("BIRD_MONITOR_DATA_DIR", str(package_root / "data"))).resolve()
     clips_dir = data_dir / "clips"
