@@ -5,6 +5,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _load_service_env(default_path: str) -> None:
+    env_path = Path(os.getenv("BIRD_MONITOR_ENV_FILE", default_path)).expanduser()
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
 def _read_release_commit(app_root: Path) -> str:
     release_file = app_root / ".release-commit"
     if release_file.exists():
@@ -39,6 +57,7 @@ class BirdHubConfig:
 
     @classmethod
     def from_env(cls) -> "BirdHubConfig":
+        _load_service_env("/etc/bird-hub.env")
         app_root = Path(__file__).resolve().parents[1]
         data_dir = Path(os.getenv("BIRD_MONITOR_DATA_DIR", app_root / "data")).resolve()
         log_dir = Path(os.getenv("BIRD_MONITOR_LOG_DIR", data_dir / "logs")).resolve()

@@ -8,6 +8,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _load_default_env_files() -> None:
+    service_env = Path(os.getenv("BIRD_MONITOR_ENV_FILE", "/etc/bird-node.env")).expanduser()
+    if service_env.exists():
+        load_dotenv(service_env, override=False)
+    load_dotenv(override=False)
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -77,7 +84,7 @@ class BirdNodeConfig:
 
 
 def load_config() -> BirdNodeConfig:
-    load_dotenv()
+    _load_default_env_files()
 
     package_root = Path(__file__).resolve().parent.parent
     commit_file = package_root / ".release-commit"
