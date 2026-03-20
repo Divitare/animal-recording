@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
@@ -911,7 +912,30 @@ class BirdNodeService:
         }
 
     def _build_sync_status(self) -> dict[str, object]:
-        return self.sync_manager.status_payload()
+        try:
+            return self.sync_manager.status_payload()
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            self.logger.exception("Failed to build hub sync status.")
+            self.last_error = str(exc)
+            return {
+                "enabled": bool(self.config.hub_url),
+                "hub_url": self.config.hub_url,
+                "last_attempt_at": None,
+                "last_successful_sync_at": None,
+                "last_error": str(exc),
+                "message": "Hub sync status is temporarily unavailable.",
+                "current_batch_id": None,
+                "queued_batch_count": None,
+                "failed_batch_count": None,
+                "synced_batch_count": None,
+                "unsynced_detection_count": None,
+                "unsynced_health_snapshot_count": None,
+                "last_batch_status": None,
+                "last_batch_created_at": None,
+                "regular_upload_interval_seconds": self.config.sync_interval_seconds,
+                "retry_interval_seconds": self.config.sync_retry_base_seconds,
+                "next_regular_attempt_at": None,
+            }
 
     def _build_time_status(self, now_utc: datetime) -> dict[str, object]:
         return {
@@ -939,7 +963,12 @@ class BirdNodeService:
             "birdnet_version": packages.get("birdnetlib"),
             "payload": status_payload,
         }
-        snapshot_id = self.storage.record_health_snapshot(snapshot_payload)
+        try:
+            snapshot_id = self.storage.record_health_snapshot(snapshot_payload)
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            self.logger.exception("Failed to store a bird-node health snapshot.")
+            self.last_error = str(exc)
+            return
         self.last_health_snapshot_monotonic = now_monotonic
         self.last_health_snapshot_id = snapshot_id
         current_utc = (((status_payload.get("time") or {})).get("current_utc"))
@@ -953,20 +982,90 @@ class BirdNodeService:
         self.last_status_write = now
 
     def _write_status(self, *, started: bool = True, recording: bool, message: str) -> None:
-        self._flush_pending_metrics()
         now_utc = datetime.utcnow()
         runtime_details = dict(getattr(self.classifier, "runtime_details", {}) or {})
-        system_health = disk_usage_summary(
-            self.config.data_dir,
-            low_space_bytes=self.config.low_disk_free_bytes,
-        )
-        system_health.update(
-            {
-                "cpu_temperature_celsius": read_cpu_temperature_celsius(),
-                "uptime_seconds": round(time.monotonic() - self.service_started_monotonic, 3),
+        try:
+            self._flush_pending_metrics()
+            system_health = disk_usage_summary(
+                self.config.data_dir,
+                low_space_bytes=self.config.low_disk_free_bytes,
+            )
+            system_health.update(
+                {
+                    "cpu_temperature_celsius": read_cpu_temperature_celsius(),
+                    "uptime_seconds": round(time.monotonic() - self.service_started_monotonic, 3),
+                }
+            )
+            status_payload = {
+                "app": {
+                    "commit": self.config.app_commit,
+                    "variant": "v2-bird-node",
+                },
+                "time": self._build_time_status(now_utc),
+                "service": {
+                    "started": started,
+                    "recording": recording,
+                    "node_id": self.config.node_id,
+                    "current_device_name": self.current_device_name,
+                    "species_provider": self.config.species_provider,
+                    "species_available": self.classifier.available(),
+                    "species_error": getattr(self.classifier, "failure_reason", None),
+                    "last_error": self.last_error,
+                    "last_analysis_duration_seconds": self.last_analysis_duration_seconds,
+                    "last_detection_at": utc_iso(self.last_detection_at),
+                    "last_event_id": self.last_event_id,
+                    "last_detected_species": self.last_detection_species,
+                    "last_health_snapshot_id": self.last_health_snapshot_id,
+                    "last_health_snapshot_at": utc_iso(self.last_health_snapshot_at),
+                    "pending_windows": len(self.pending_windows),
+                    "saved_detection_count": self.total_saved_detections,
+                    "status_file": str(self.config.status_file),
+                    "database_path": str(self.config.database_path),
+                    "log_dir": str(self.config.log_dir),
+                    "message": message,
+                    "updated_at": utc_iso(now_utc),
+                    "runtime_details": runtime_details,
+                    "sync": self._build_sync_status(),
+                },
+                "health": {
+                    "microphone": self._build_microphone_health(),
+                    "birdnet": self._build_birdnet_health(runtime_details),
+                    "system": system_health,
+                },
+                "statistics": self._build_statistics(),
             }
-        )
-        status_payload = {
+            self._maybe_store_health_snapshot(
+                status_payload,
+                force=not started or self.last_health_snapshot_monotonic is None,
+            )
+            service_payload = status_payload["service"]
+            if isinstance(service_payload, dict):
+                service_payload["last_health_snapshot_id"] = self.last_health_snapshot_id
+                service_payload["last_health_snapshot_at"] = utc_iso(self.last_health_snapshot_at)
+            self.storage.write_status(status_payload)
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            self.logger.exception("Failed to write the full bird-node status payload; writing fallback status.")
+            self.last_error = str(exc)
+            self._write_fallback_status(
+                started=started,
+                recording=recording,
+                message=message,
+                now_utc=now_utc,
+                runtime_details=runtime_details,
+                failure=str(exc),
+            )
+
+    def _write_fallback_status(
+        self,
+        *,
+        started: bool,
+        recording: bool,
+        message: str,
+        now_utc: datetime,
+        runtime_details: dict[str, object],
+        failure: str,
+    ) -> None:
+        fallback_payload = {
             "app": {
                 "commit": self.config.app_commit,
                 "variant": "v2-bird-node",
@@ -980,7 +1079,7 @@ class BirdNodeService:
                 "species_provider": self.config.species_provider,
                 "species_available": self.classifier.available(),
                 "species_error": getattr(self.classifier, "failure_reason", None),
-                "last_error": self.last_error,
+                "last_error": failure,
                 "last_analysis_duration_seconds": self.last_analysis_duration_seconds,
                 "last_detection_at": utc_iso(self.last_detection_at),
                 "last_event_id": self.last_event_id,
@@ -992,24 +1091,49 @@ class BirdNodeService:
                 "status_file": str(self.config.status_file),
                 "database_path": str(self.config.database_path),
                 "log_dir": str(self.config.log_dir),
-                "message": message,
+                "message": f"{message} (fallback status mode)",
                 "updated_at": utc_iso(now_utc),
                 "runtime_details": runtime_details,
-                "sync": self._build_sync_status(),
+                "sync": {
+                    "enabled": bool(self.config.hub_url),
+                    "hub_url": self.config.hub_url,
+                    "last_error": failure,
+                    "message": "Fallback sync status because the full status payload failed to build.",
+                },
             },
             "health": {
-                "microphone": self._build_microphone_health(),
-                "birdnet": self._build_birdnet_health(runtime_details),
-                "system": system_health,
+                "microphone": {
+                    "status": "unknown",
+                    "device_name": self.current_device_name,
+                    "reasons": ["The full bird-node status payload could not be built."],
+                },
+                "birdnet": {
+                    "status": "healthy" if self.classifier.available() else "unavailable",
+                    "available": self.classifier.available(),
+                    "provider": self.config.species_provider,
+                    "runtime_backend": runtime_details.get("runtime_backend"),
+                    "analysis_mode": runtime_details.get("analysis_mode"),
+                    "reasons": [failure],
+                },
+                "system": {
+                    "status": "unknown",
+                    "uptime_seconds": round(time.monotonic() - self.service_started_monotonic, 3),
+                },
             },
-            "statistics": self._build_statistics(),
+            "statistics": {
+                "hours_recorded_total": 0.0,
+                "hours_successfully_analyzed_total": 0.0,
+                "microphone_uptime_hours_total": 0.0,
+                "detections_total": self.total_saved_detections,
+                "detections_per_day": [],
+            },
         }
-        self._maybe_store_health_snapshot(status_payload, force=not started or self.last_health_snapshot_monotonic is None)
-        service_payload = status_payload["service"]
-        if isinstance(service_payload, dict):
-            service_payload["last_health_snapshot_id"] = self.last_health_snapshot_id
-            service_payload["last_health_snapshot_at"] = utc_iso(self.last_health_snapshot_at)
-        self.storage.write_status(status_payload)
+        self.config.status_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.config.status_file.with_name(f".{self.config.status_file.name}.tmp")
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(fallback_payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        temp_path.replace(self.config.status_file)
 
 
 def _parse_utc_or_none(value: str | None) -> datetime | None:
