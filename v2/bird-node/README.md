@@ -32,6 +32,13 @@ python -m bird_node export-events --since-hours 24
 python -m bird_node sync-now
 ```
 
+Useful service commands:
+
+```bash
+sudo systemctl restart bird-node
+sudo journalctl -u bird-node -f
+```
+
 Main sync environment variables:
 
 - `BIRD_MONITOR_HUB_URL`
