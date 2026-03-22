@@ -229,6 +229,10 @@ class RollingAudioBuffer:
                 return np.zeros((0, 1), dtype=np.float32)
             return np.concatenate(pieces, axis=0)
 
+    def frame_bounds(self) -> tuple[int, int]:
+        with self._lock:
+            return self._buffer_start_frame, self._buffer_end_frame
+
     @property
     def _buffer_end_frame(self) -> int:
         return self._buffer_start_frame + self._frame_count
@@ -735,7 +739,7 @@ class BirdNodeService:
         rolling_buffer: RollingAudioBuffer,
         stream_started_at: datetime,
     ) -> tuple[Path | None, float | None]:
-        start_frame = max(
+        clip_start_frame = max(
             0,
             int(
                 (
@@ -744,8 +748,8 @@ class BirdNodeService:
                 * self.config.sample_rate
             ),
         )
-        end_frame = max(
-            start_frame + 1,
+        clip_end_frame = max(
+            clip_start_frame + 1,
             int(
                 (
                     (detection.ended_at + timedelta(seconds=self.config.detection_clip_padding_seconds)) - stream_started_at
@@ -753,7 +757,53 @@ class BirdNodeService:
                 * self.config.sample_rate
             ),
         )
-        clip_samples = rolling_buffer.slice_frames(start_frame, end_frame)
+        detection_start_frame = max(
+            0,
+            int((detection.started_at - stream_started_at).total_seconds() * self.config.sample_rate),
+        )
+        detection_end_frame = max(
+            detection_start_frame + 1,
+            int((detection.ended_at - stream_started_at).total_seconds() * self.config.sample_rate),
+        )
+        available_start_frame, available_end_frame = rolling_buffer.frame_bounds()
+
+        if detection_start_frame < available_start_frame or detection_end_frame > available_end_frame:
+            self.birdnet_logger.warning(
+                "Could not save clip for %s because the detected audio is no longer fully available in the rolling buffer. detection_frames=%s-%s available_frames=%s-%s",
+                detection.species_common_name,
+                detection_start_frame,
+                detection_end_frame,
+                available_start_frame,
+                available_end_frame,
+            )
+            return None, None
+
+        bounded_start_frame = max(clip_start_frame, available_start_frame)
+        bounded_end_frame = min(clip_end_frame, available_end_frame)
+        if bounded_end_frame <= bounded_start_frame:
+            self.birdnet_logger.warning(
+                "Could not save clip for %s because the requested clip window was outside the rolling buffer. clip_frames=%s-%s available_frames=%s-%s",
+                detection.species_common_name,
+                clip_start_frame,
+                clip_end_frame,
+                available_start_frame,
+                available_end_frame,
+            )
+            return None, None
+
+        if bounded_start_frame != clip_start_frame or bounded_end_frame != clip_end_frame:
+            self.birdnet_logger.info(
+                "Saving truncated clip for %s because optional clip padding was not fully available. requested_frames=%s-%s saved_frames=%s-%s available_frames=%s-%s",
+                detection.species_common_name,
+                clip_start_frame,
+                clip_end_frame,
+                bounded_start_frame,
+                bounded_end_frame,
+                available_start_frame,
+                available_end_frame,
+            )
+
+        clip_samples = rolling_buffer.slice_frames(bounded_start_frame, bounded_end_frame)
         if clip_samples.size == 0:
             self.birdnet_logger.warning(
                 "Could not save clip for %s because the required audio is no longer in the rolling buffer.",
