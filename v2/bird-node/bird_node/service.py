@@ -101,6 +101,12 @@ class PendingWindow:
     window_ended_at: datetime
 
 
+@dataclass
+class ActiveSpeciesEvent:
+    detection: SessionSpeciesDetection
+    latest_analysis_duration_seconds: float | None
+
+
 class AnalysisWindowAccumulator:
     def __init__(self, window_frames: int, step_frames: int) -> None:
         self.window_frames = window_frames
@@ -262,6 +268,7 @@ class BirdNodeService:
         self.analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bird-node-birdnet")
         self.pending_windows: list[PendingWindow] = []
         self.recent_saved_detections: list[SessionSpeciesDetection] = []
+        self.active_species_events: dict[tuple[str, str | None], ActiveSpeciesEvent] = {}
         self.service_started_at = datetime.utcnow()
         self.service_started_monotonic = time.monotonic()
         self.metrics_summary: dict[str, object] = {"totals": empty_metric_totals(), "daily": [], "updated_at": None}
@@ -351,6 +358,7 @@ class BirdNodeService:
         finally:
             self.stop_event.set()
             self._drain_pending_windows(final_wait=True)
+            self.active_species_events.clear()
             self.sync_manager.stop()
             self.analysis_executor.shutdown(wait=False, cancel_futures=False)
             self._write_status(started=False, recording=False, message="bird-node stopped.")
@@ -444,6 +452,11 @@ class BirdNodeService:
             )
 
         self._drain_pending_windows(rolling_buffer=rolling_buffer, stream_started_at=stream_started_at, final_wait=True)
+        self._finalize_ready_active_species_events(
+            rolling_buffer=rolling_buffer,
+            stream_started_at=stream_started_at,
+            force=True,
+        )
 
     def _analyze_window(
         self,
@@ -561,64 +574,22 @@ class BirdNodeService:
         stream_started_at: datetime | None,
     ) -> None:
         self.last_analysis_duration_seconds = result.analysis_duration_seconds
-        if not result.detections or rolling_buffer is None or stream_started_at is None:
+        if rolling_buffer is None or stream_started_at is None:
             return
 
-        for detection in self._merge_session_detections(result.detections):
-            if self._is_duplicate_detection(detection):
-                continue
-            event_id = f"evt-{uuid.uuid4().hex}"
-            clip_path, clip_duration = self._save_detection_clip(
-                detection,
-                event_id=event_id,
+        merged_detections = self._merge_session_detections(result.detections)
+        if merged_detections:
+            self._update_active_species_events(
+                merged_detections,
+                analysis_duration_seconds=result.analysis_duration_seconds,
                 rolling_buffer=rolling_buffer,
                 stream_started_at=stream_started_at,
             )
-            if clip_path is None or clip_duration is None:
-                continue
 
-            self.total_saved_detections += 1
-            self.last_detection_at = detection.ended_at
-            self.last_event_id = event_id
-            self.last_detection_species = [detection.species_common_name]
-            self.recent_saved_detections.append(detection)
-            self._prune_recent_saved_detections()
-            record_id = self.storage.record_detection(
-                {
-                    "event_id": event_id,
-                    "node_id": self.config.node_id,
-                    "species_common_name": detection.species_common_name,
-                    "species_scientific_name": detection.species_scientific_name,
-                    "confidence": detection.confidence,
-                    "started_at": utc_iso(detection.started_at),
-                    "ended_at": utc_iso(detection.ended_at),
-                    "clip_file_path": str(clip_path),
-                    "clip_duration_seconds": clip_duration,
-                    "sample_rate": self.config.sample_rate,
-                    "channels": self.config.channels,
-                    "source_window_started_at": utc_iso(detection.source_window_started_at),
-                    "source_window_ended_at": utc_iso(detection.source_window_ended_at),
-                    "analysis_duration_seconds": result.analysis_duration_seconds,
-                    "location_name": self.config.location_name,
-                    "latitude": self.config.latitude,
-                    "longitude": self.config.longitude,
-                    "created_at": utc_iso(datetime.utcnow()),
-                }
-            )
-            self.metrics_summary = self.storage.load_metrics_summary(max_days=self.config.status_history_days)
-            self.total_saved_detections = int(
-                ((self.metrics_summary.get("totals") or {}).get("detection_count") or 0)
-            )
-            self.logger.info(
-                "Saved bird detection record_id=%s event_id=%s species=%s confidence=%.3f started_at=%s ended_at=%s clip=%s",
-                record_id,
-                event_id,
-                detection.species_common_name,
-                detection.confidence,
-                utc_iso(detection.started_at),
-                utc_iso(detection.ended_at),
-                clip_path,
-            )
+        self._finalize_ready_active_species_events(
+            rolling_buffer=rolling_buffer,
+            stream_started_at=stream_started_at,
+        )
 
     def _observe_audio_chunk(
         self,
@@ -712,6 +683,155 @@ class BirdNodeService:
             merged.append(detection)
 
         return sorted(merged, key=lambda item: item.started_at)
+
+    def _species_event_key(self, detection: SessionSpeciesDetection) -> tuple[str, str | None]:
+        return detection.species_common_name, detection.species_scientific_name
+
+    def _merge_detection_pair(
+        self,
+        current: SessionSpeciesDetection,
+        incoming: SessionSpeciesDetection,
+    ) -> SessionSpeciesDetection:
+        return SessionSpeciesDetection(
+            started_at=min(current.started_at, incoming.started_at),
+            ended_at=max(current.ended_at, incoming.ended_at),
+            confidence=max(current.confidence, incoming.confidence),
+            species_common_name=current.species_common_name,
+            species_scientific_name=current.species_scientific_name,
+            source_window_started_at=min(current.source_window_started_at, incoming.source_window_started_at),
+            source_window_ended_at=max(current.source_window_ended_at, incoming.source_window_ended_at),
+        )
+
+    def _update_active_species_events(
+        self,
+        detections: list[SessionSpeciesDetection],
+        *,
+        analysis_duration_seconds: float | None,
+        rolling_buffer: RollingAudioBuffer,
+        stream_started_at: datetime,
+    ) -> None:
+        for detection in detections:
+            key = self._species_event_key(detection)
+            active_event = self.active_species_events.get(key)
+            if active_event is None:
+                self.active_species_events[key] = ActiveSpeciesEvent(
+                    detection=detection,
+                    latest_analysis_duration_seconds=analysis_duration_seconds,
+                )
+                continue
+
+            if detection.started_at <= (
+                active_event.detection.ended_at + timedelta(seconds=SESSION_DETECTION_MERGE_GAP_SECONDS)
+            ):
+                active_event.detection = self._merge_detection_pair(active_event.detection, detection)
+                if analysis_duration_seconds is not None:
+                    active_event.latest_analysis_duration_seconds = analysis_duration_seconds
+                continue
+
+            self._finalize_species_event(
+                key,
+                active_event,
+                rolling_buffer=rolling_buffer,
+                stream_started_at=stream_started_at,
+            )
+            self.active_species_events[key] = ActiveSpeciesEvent(
+                detection=detection,
+                latest_analysis_duration_seconds=analysis_duration_seconds,
+            )
+
+    def _finalize_ready_active_species_events(
+        self,
+        *,
+        rolling_buffer: RollingAudioBuffer,
+        stream_started_at: datetime,
+        force: bool = False,
+    ) -> None:
+        coverage_end_at = self.last_successful_analysis_coverage_end_at
+        finalize_after = timedelta(
+            seconds=max(float(self.config.live_step_seconds), float(SESSION_DETECTION_MERGE_GAP_SECONDS))
+        )
+
+        for key, active_event in list(self.active_species_events.items()):
+            if not force:
+                if coverage_end_at is None:
+                    continue
+                if coverage_end_at < (active_event.detection.ended_at + finalize_after):
+                    continue
+
+            self._finalize_species_event(
+                key,
+                active_event,
+                rolling_buffer=rolling_buffer,
+                stream_started_at=stream_started_at,
+            )
+
+    def _finalize_species_event(
+        self,
+        key: tuple[str, str | None],
+        active_event: ActiveSpeciesEvent,
+        *,
+        rolling_buffer: RollingAudioBuffer,
+        stream_started_at: datetime,
+    ) -> None:
+        detection = active_event.detection
+        if self._is_duplicate_detection(detection):
+            self.active_species_events.pop(key, None)
+            return
+
+        event_id = f"evt-{uuid.uuid4().hex}"
+        clip_path, clip_duration = self._save_detection_clip(
+            detection,
+            event_id=event_id,
+            rolling_buffer=rolling_buffer,
+            stream_started_at=stream_started_at,
+        )
+        if clip_path is None or clip_duration is None:
+            self.active_species_events.pop(key, None)
+            return
+
+        self.total_saved_detections += 1
+        self.last_detection_at = detection.ended_at
+        self.last_event_id = event_id
+        self.last_detection_species = [detection.species_common_name]
+        self.recent_saved_detections.append(detection)
+        self._prune_recent_saved_detections()
+        record_id = self.storage.record_detection(
+            {
+                "event_id": event_id,
+                "node_id": self.config.node_id,
+                "species_common_name": detection.species_common_name,
+                "species_scientific_name": detection.species_scientific_name,
+                "confidence": detection.confidence,
+                "started_at": utc_iso(detection.started_at),
+                "ended_at": utc_iso(detection.ended_at),
+                "clip_file_path": str(clip_path),
+                "clip_duration_seconds": clip_duration,
+                "sample_rate": self.config.sample_rate,
+                "channels": self.config.channels,
+                "source_window_started_at": utc_iso(detection.source_window_started_at),
+                "source_window_ended_at": utc_iso(detection.source_window_ended_at),
+                "analysis_duration_seconds": active_event.latest_analysis_duration_seconds,
+                "location_name": self.config.location_name,
+                "latitude": self.config.latitude,
+                "longitude": self.config.longitude,
+                "created_at": utc_iso(datetime.utcnow()),
+            }
+        )
+        self.metrics_summary = self.storage.load_metrics_summary(max_days=self.config.status_history_days)
+        self.total_saved_detections = int(
+            ((self.metrics_summary.get("totals") or {}).get("detection_count") or 0)
+        )
+        self.logger.info(
+            "Saved bird detection record_id=%s event_id=%s species=%s confidence=%.3f started_at=%s ended_at=%s clip=%s",
+            record_id,
+            event_id,
+            detection.species_common_name,
+            detection.confidence,
+            utc_iso(detection.started_at),
+            utc_iso(detection.ended_at),
+            clip_path,
+        )
+        self.active_species_events.pop(key, None)
 
     def _is_duplicate_detection(self, candidate: SessionSpeciesDetection) -> bool:
         for existing in self.recent_saved_detections:
