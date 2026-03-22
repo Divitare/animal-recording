@@ -660,6 +660,9 @@ class BirdHubStorage:
                     "last_detection_at": row["last_detection_at"],
                     "active": bool(last_seen and last_seen >= active_cutoff),
                     "latest_health_snapshot": latest_snapshot,
+                    "latest_health_snapshot_at": (
+                        latest_snapshot.get("captured_at_utc") if latest_snapshot is not None else None
+                    ),
                     "health_summary": self._health_summary(latest_snapshot["snapshot"] if latest_snapshot else None),
                 }
             )
@@ -705,6 +708,9 @@ class BirdHubStorage:
             "last_runtime_backend": row["last_runtime_backend"],
             "last_birdnet_version": row["last_birdnet_version"],
             "latest_health_snapshot": latest_snapshot,
+            "latest_health_snapshot_at": (
+                latest_snapshot.get("captured_at_utc") if latest_snapshot is not None else None
+            ),
             "health_summary": self._health_summary(latest_snapshot["snapshot"] if latest_snapshot else None),
         }
 
@@ -1012,12 +1018,53 @@ class BirdHubStorage:
         system = health.get("system") or {}
         microphone = health.get("microphone") or {}
         birdnet = health.get("birdnet") or {}
+        sync = snapshot_payload.get("sync") or {}
+        statistics = snapshot_payload.get("statistics") or {}
+        current_day_utc = datetime.utcnow().date().isoformat()
+        daily_statistics = list(statistics.get("detections_per_day") or [])
+        today_statistics = next(
+            (item for item in daily_statistics if str(item.get("date_utc") or "") == current_day_utc),
+            None,
+        )
+
+        sync_status = "disabled"
+        if sync.get("enabled"):
+            if sync.get("last_error"):
+                sync_status = "error"
+            elif sync.get("current_batch_id") is not None:
+                sync_status = "uploading"
+            elif int(sync.get("failed_batch_count") or 0) > 0:
+                sync_status = "retrying"
+            elif int(sync.get("queued_batch_count") or 0) > 0:
+                sync_status = "queued"
+            elif sync.get("last_successful_sync_at"):
+                sync_status = "synced"
+            else:
+                sync_status = "scheduled"
+
         return {
             "system_status": system.get("status"),
             "microphone_status": microphone.get("status"),
             "birdnet_status": birdnet.get("status"),
             "cpu_temperature_celsius": system.get("cpu_temperature_celsius"),
             "free_bytes": system.get("free_bytes"),
+            "disk_used_percent": system.get("used_percent"),
+            "last_audio_chunk_at": microphone.get("last_audio_chunk_at"),
+            "last_successful_sync_at": sync.get("last_successful_sync_at"),
+            "last_sync_error": sync.get("last_error"),
+            "queued_batch_count": sync.get("queued_batch_count"),
+            "failed_batch_count": sync.get("failed_batch_count"),
+            "sync_status": sync_status,
+            "hours_analyzed_today": (
+                float(today_statistics.get("hours_successfully_analyzed") or 0.0)
+                if today_statistics is not None
+                else 0.0
+            ),
+            "detections_today": (
+                int(today_statistics.get("detection_count") or 0)
+                if today_statistics is not None
+                else 0
+            ),
         }
 
     def _connect(self) -> sqlite3.Connection:

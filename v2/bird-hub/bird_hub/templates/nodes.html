@@ -22,16 +22,20 @@
           <dl class="detail-list">
             <div><dt>Location</dt><dd>{{ node.location_name or "-" }}</dd></div>
             <div><dt>Last seen</dt><dd>{{ node.last_seen_at|utc_display }}</dd></div>
-            <div><dt>Last detection</dt><dd>{{ node.last_detection_at|utc_display }}</dd></div>
-            <div><dt>Total detections</dt><dd>{{ node.detection_count_total }}</dd></div>
-            <div><dt>Version</dt><dd>{{ node.last_app_version or "-" }}</dd></div>
-            <div><dt>BirdNET</dt><dd>{{ node.last_birdnet_version or "-" }}</dd></div>
+            <div><dt>Microphone</dt><dd>{{ (node.health_summary.microphone_status or "-") if node.health_summary else "-" }}</dd></div>
+            <div><dt>BirdNET health</dt><dd>{{ (node.health_summary.birdnet_status or "-") if node.health_summary else "-" }}</dd></div>
+            <div><dt>Disk free</dt><dd>{{ (node.health_summary.free_bytes|filesize) if node.health_summary else "-" }}</dd></div>
+            <div><dt>CPU temp</dt><dd>{% if node.health_summary and node.health_summary.cpu_temperature_celsius is not none %}{{ "%.1f"|format(node.health_summary.cpu_temperature_celsius) }} °C{% else %}-{% endif %}</dd></div>
+            <div><dt>Sync status</dt><dd>{{ (node.health_summary.sync_status or "-") if node.health_summary else "-" }}</dd></div>
+            <div><dt>Last sync</dt><dd>{{ (node.health_summary.last_successful_sync_at|utc_display) if node.health_summary else "-" }}</dd></div>
+            <div><dt>Hours analyzed today</dt><dd>{% if node.health_summary %}{{ "%.2f"|format(node.health_summary.hours_analyzed_today or 0) }}{% else %}-{% endif %}</dd></div>
+            <div><dt>Detections today</dt><dd>{% if node.health_summary %}{{ node.health_summary.detections_today }}{% else %}-{% endif %}</dd></div>
           </dl>
           {% if node.health_summary %}
             <div class="badge-row">
               <span class="metric-pill">Mic: {{ node.health_summary.microphone_status or "-" }}</span>
               <span class="metric-pill">BirdNET: {{ node.health_summary.birdnet_status or "-" }}</span>
-              <span class="metric-pill">System: {{ node.health_summary.system_status or "-" }}</span>
+              <span class="metric-pill">Sync: {{ node.health_summary.sync_status or "-" }}</span>
             </div>
           {% endif %}
         </article>
