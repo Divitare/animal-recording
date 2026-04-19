@@ -21,7 +21,7 @@ Current behavior:
 - stores a persistent health snapshot at least every 5 minutes
 - can export bird events, matching clips, and the nearest health snapshot as a zip archive with `python -m bird_node export-events`
 - can queue and upload offline-first sync bundles to `bird-hub` over WLAN or Ethernet when `BIRD_MONITOR_HUB_URL` is configured
-- tries regular hub uploads every 30 minutes and retries failed batches every 5 minutes by default
+- tries regular hub uploads every 30 minutes, draining all detections and health snapshots that were unsynced when that sync cycle started, and retries failed batches every 5 minutes by default
 - deletes acknowledged local clips, detections, and uploaded health snapshots after the hub confirms receipt
 - reports sync health in `status.json`
 
@@ -33,7 +33,7 @@ python -m bird_node sync-now
 sudo -u birdnode bash -lc 'cd /opt/bird-node/current && /opt/bird-node/.venv/bin/python -m bird_node sync-now'
 ```
 
-`sync-now` forces one immediate upload attempt. It does not wait for the next 30 minute schedule window.
+`sync-now` forces one immediate sync cycle. It does not wait for the next 30 minute schedule window, and it keeps uploading batches until the backlog that existed when the cycle started is drained or an upload fails.
 
 Useful service commands:
 

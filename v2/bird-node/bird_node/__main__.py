@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--since-utc", help="UTC start timestamp, for example 2026-03-17T00:00:00Z.")
     export_parser.add_argument("--until-utc", help="UTC end timestamp, for example 2026-03-17T23:59:59Z.")
 
-    subparsers.add_parser("sync-now", help="Force one immediate sync attempt against the configured bird-hub.")
+    subparsers.add_parser("sync-now", help="Force one immediate sync cycle that drains the backlog present at the start of the cycle to the configured bird-hub.")
 
     return parser
 

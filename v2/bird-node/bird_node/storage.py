@@ -661,35 +661,74 @@ class BirdNodeStorage:
             )
         return snapshots
 
-    def list_unsynced_detection_ids(self, *, limit: int) -> list[int]:
+    def list_unsynced_detection_ids(self, *, limit: int, max_id: int | None = None) -> list[int]:
         with self._lock:
             with self._connect() as connection:
-                rows = connection.execute(
-                    """
-                    SELECT id
-                    FROM detections
-                    WHERE synced_at IS NULL AND queued_batch_id IS NULL
-                    ORDER BY started_at ASC, id ASC
-                    LIMIT ?
-                    """,
-                    (max(1, int(limit)),),
-                ).fetchall()
+                if max_id is None:
+                    rows = connection.execute(
+                        """
+                        SELECT id
+                        FROM detections
+                        WHERE synced_at IS NULL AND queued_batch_id IS NULL
+                        ORDER BY started_at ASC, id ASC
+                        LIMIT ?
+                        """,
+                        (max(1, int(limit)),),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        """
+                        SELECT id
+                        FROM detections
+                        WHERE synced_at IS NULL AND queued_batch_id IS NULL AND id <= ?
+                        ORDER BY started_at ASC, id ASC
+                        LIMIT ?
+                        """,
+                        (int(max_id), max(1, int(limit))),
+                    ).fetchall()
         return [int(row["id"]) for row in rows]
 
-    def list_unsynced_health_snapshot_ids(self, *, limit: int) -> list[int]:
+    def list_unsynced_health_snapshot_ids(self, *, limit: int, max_id: int | None = None) -> list[int]:
         with self._lock:
             with self._connect() as connection:
-                rows = connection.execute(
-                    """
-                    SELECT id
-                    FROM health_snapshots
-                    WHERE synced_at IS NULL AND queued_batch_id IS NULL
-                    ORDER BY captured_at ASC, id ASC
-                    LIMIT ?
-                    """,
-                    (max(1, int(limit)),),
-                ).fetchall()
+                if max_id is None:
+                    rows = connection.execute(
+                        """
+                        SELECT id
+                        FROM health_snapshots
+                        WHERE synced_at IS NULL AND queued_batch_id IS NULL
+                        ORDER BY captured_at ASC, id ASC
+                        LIMIT ?
+                        """,
+                        (max(1, int(limit)),),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        """
+                        SELECT id
+                        FROM health_snapshots
+                        WHERE synced_at IS NULL AND queued_batch_id IS NULL AND id <= ?
+                        ORDER BY captured_at ASC, id ASC
+                        LIMIT ?
+                        """,
+                        (int(max_id), max(1, int(limit))),
+                    ).fetchall()
         return [int(row["id"]) for row in rows]
+
+    def get_unsynced_sync_watermark(self) -> dict[str, int]:
+        with self._lock:
+            with self._connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT
+                        COALESCE((SELECT MAX(id) FROM detections WHERE synced_at IS NULL), 0) AS max_detection_id,
+                        COALESCE((SELECT MAX(id) FROM health_snapshots WHERE synced_at IS NULL), 0) AS max_health_snapshot_id
+                    """
+                ).fetchone()
+        return {
+            "max_detection_id": int(row["max_detection_id"] if row is not None else 0),
+            "max_health_snapshot_id": int(row["max_health_snapshot_id"] if row is not None else 0),
+        }
 
     def create_sync_batch(
         self,

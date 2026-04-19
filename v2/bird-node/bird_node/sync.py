@@ -62,6 +62,7 @@ class BirdNodeSyncManager:
             return
 
         now = datetime.utcnow()
+        cycle_watermark = self.storage.get_unsynced_sync_watermark()
         batch = self.storage.get_next_sync_batch(now_utc=utc_iso(now) or "")
         if batch is None:
             summary = self.storage.get_sync_summary()
@@ -92,11 +93,24 @@ class BirdNodeSyncManager:
                 )
                 return
 
-            batch = self._create_next_batch()
+            batch = self._create_next_batch(
+                max_detection_id=cycle_watermark["max_detection_id"],
+                max_health_snapshot_id=cycle_watermark["max_health_snapshot_id"],
+            )
             if batch is None:
                 return
 
-        self._upload_batch(batch)
+        while batch is not None and not self.stop_event.is_set():
+            outcome = self._upload_batch(batch)
+            if outcome == "failed":
+                return
+
+            batch = self.storage.get_next_sync_batch(now_utc=utc_iso(datetime.utcnow()) or "")
+            if batch is None:
+                batch = self._create_next_batch(
+                    max_detection_id=cycle_watermark["max_detection_id"],
+                    max_health_snapshot_id=cycle_watermark["max_health_snapshot_id"],
+                )
 
     def status_payload(self) -> dict[str, object]:
         summary = self.storage.get_sync_summary()
@@ -137,9 +151,20 @@ class BirdNodeSyncManager:
             if self.stop_event.wait(self._loop_wait_seconds()):
                 break
 
-    def _create_next_batch(self) -> dict[str, Any] | None:
-        detection_ids = self.storage.list_unsynced_detection_ids(limit=self.config.sync_max_events_per_bundle)
-        snapshot_ids = self.storage.list_unsynced_health_snapshot_ids(limit=self.config.sync_max_health_snapshots_per_bundle)
+    def _create_next_batch(
+        self,
+        *,
+        max_detection_id: int | None = None,
+        max_health_snapshot_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        detection_ids = self.storage.list_unsynced_detection_ids(
+            limit=self.config.sync_max_events_per_bundle,
+            max_id=max_detection_id if (max_detection_id or 0) > 0 else None,
+        )
+        snapshot_ids = self.storage.list_unsynced_health_snapshot_ids(
+            limit=self.config.sync_max_health_snapshots_per_bundle,
+            max_id=max_health_snapshot_id if (max_health_snapshot_id or 0) > 0 else None,
+        )
         if not detection_ids and not snapshot_ids:
             return None
 
@@ -178,7 +203,7 @@ class BirdNodeSyncManager:
         )
         return self.storage.get_next_sync_batch(now_utc=utc_iso(datetime.utcnow()) or "")
 
-    def _upload_batch(self, batch: dict[str, Any]) -> None:
+    def _upload_batch(self, batch: dict[str, Any]) -> str:
         batch_id = int(batch["id"])
         batch_path = Path(str(batch["bundle_path"])).resolve()
         if not batch_path.exists():
@@ -192,7 +217,7 @@ class BirdNodeSyncManager:
                 last_error=f"Sync batch file is missing: {batch_path}",
                 message=f"Batch {batch_id} was abandoned because its bundle file no longer exists.",
             )
-            return
+            return "abandoned"
 
         attempted_at = datetime.utcnow()
         self.storage.mark_sync_batch_uploading(batch_id, attempted_at=utc_iso(attempted_at) or "")
@@ -249,6 +274,7 @@ class BirdNodeSyncManager:
                 last_error=None,
                 message=f"Uploaded sync batch {batch_id} successfully and deleted the acknowledged local payload.",
             )
+            return "synced"
         except Exception as exc:
             backoff_seconds = max(self.config.sync_retry_base_seconds, 5.0)
             next_retry_at = attempted_at + timedelta(seconds=backoff_seconds)
@@ -270,6 +296,7 @@ class BirdNodeSyncManager:
                 last_error=str(exc),
                 message=f"Sync batch {batch_id} failed and will retry later.",
             )
+            return "failed"
 
     def _loop_wait_seconds(self) -> float:
         return max(min(self.config.sync_interval_seconds, self.config.sync_retry_base_seconds, 300.0), 5.0)
