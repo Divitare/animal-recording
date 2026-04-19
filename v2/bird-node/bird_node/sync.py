@@ -56,7 +56,7 @@ class BirdNodeSyncManager:
     def enabled(self) -> bool:
         return bool(self.config.hub_url)
 
-    def run_once(self) -> None:
+    def run_once(self, *, force: bool = False) -> None:
         if not self.enabled:
             self._update_state(message="Hub sync is disabled until BIRD_MONITOR_HUB_URL is configured.")
             return
@@ -82,7 +82,7 @@ class BirdNodeSyncManager:
                 return
 
             next_regular_attempt_at = self._next_regular_attempt_at()
-            if next_regular_attempt_at is not None and now < next_regular_attempt_at:
+            if not force and next_regular_attempt_at is not None and now < next_regular_attempt_at:
                 self._update_state(
                     last_error=None,
                     message=(

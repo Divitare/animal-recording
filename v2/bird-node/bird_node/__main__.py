@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--since-utc", help="UTC start timestamp, for example 2026-03-17T00:00:00Z.")
     export_parser.add_argument("--until-utc", help="UTC end timestamp, for example 2026-03-17T23:59:59Z.")
 
-    subparsers.add_parser("sync-now", help="Run one immediate sync attempt against the configured bird-hub.")
+    subparsers.add_parser("sync-now", help="Force one immediate sync attempt against the configured bird-hub.")
 
     return parser
 
@@ -77,7 +77,7 @@ def run_sync_now() -> None:
     storage.initialize()
     sync_manager = BirdNodeSyncManager(config, storage, stop_event=threading.Event())
     try:
-        sync_manager.run_once()
+        sync_manager.run_once(force=True)
         print(json.dumps(sync_manager.status_payload(), indent=2, sort_keys=True))
     finally:
         sync_manager.stop()

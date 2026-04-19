@@ -30,11 +30,16 @@ Example export command:
 ```bash
 python -m bird_node export-events --since-hours 24
 python -m bird_node sync-now
+sudo -u birdnode bash -lc 'cd /opt/bird-node/current && /opt/bird-node/.venv/bin/python -m bird_node sync-now'
 ```
+
+`sync-now` forces one immediate upload attempt. It does not wait for the next 30 minute schedule window.
 
 Useful service commands:
 
 ```bash
+sudo systemctl stop bird-node
+sudo systemctl start bird-node
 sudo systemctl restart bird-node
 sudo journalctl -u bird-node -f
 ```
