@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import time
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_file, url_for
 
@@ -50,6 +52,91 @@ def _format_bytes(value: object) -> str:
         size /= 1024
         unit_index += 1
     return f"{size:.1f} {units[unit_index]}"
+
+
+def _resolve_ui_path(value: str | None, *, kind: str) -> Path:
+    candidate = Path((value or "").strip()).expanduser()
+    if not str(candidate).strip():
+        raise ValueError(f"Please enter a {kind} path.")
+    if not candidate.is_absolute():
+        raise ValueError(f"The {kind} path must be absolute.")
+    return candidate.resolve()
+
+
+def _ensure_writable_directory(path: Path, *, label: str) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    probe_path = path / f".bird-hub-write-test-{time.time_ns()}"
+    try:
+        probe_path.write_text("ok", encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"The {label} is not writable: {path} ({exc})") from exc
+    finally:
+        try:
+            probe_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _ensure_writable_file_parent(path: Path, *, label: str) -> None:
+    _ensure_writable_directory(path.parent, label=label)
+
+
+def _copy_tree_files(source_root: Path, destination_root: Path) -> int:
+    if source_root == destination_root or not source_root.exists():
+        return 0
+    files = [path for path in source_root.rglob("*") if path.is_file()]
+    copied_destinations: list[Path] = []
+    for source_path in files:
+        relative_path = source_path.relative_to(source_root)
+        destination_path = destination_root / relative_path
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        if destination_path.exists():
+            raise ValueError(f"Destination file already exists: {destination_path}")
+        shutil.copy2(source_path, destination_path)
+        copied_destinations.append(destination_path)
+    try:
+        for source_path in files:
+            source_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ValueError(f"Copied files to {destination_root}, but could not clean up the old location: {exc}") from exc
+    for directory_path in sorted((path for path in source_root.rglob("*") if path.is_dir()), key=lambda item: len(item.parts), reverse=True):
+        try:
+            directory_path.rmdir()
+        except OSError:
+            continue
+    return len(copied_destinations)
+
+
+def _copy_database_files(source_database: Path, destination_database: Path) -> int:
+    if source_database == destination_database or not source_database.exists():
+        return 0
+    source_paths = [
+        source_database,
+        source_database.with_name(f"{source_database.name}-wal"),
+        source_database.with_name(f"{source_database.name}-shm"),
+    ]
+    destination_paths = [
+        destination_database,
+        destination_database.with_name(f"{destination_database.name}-wal"),
+        destination_database.with_name(f"{destination_database.name}-shm"),
+    ]
+    copied_pairs: list[tuple[Path, Path]] = []
+    for source_path, destination_path in zip(source_paths, destination_paths):
+        if not source_path.exists():
+            continue
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        if destination_path.exists():
+            raise ValueError(f"Destination file already exists: {destination_path}")
+        shutil.copy2(source_path, destination_path)
+        copied_pairs.append((source_path, destination_path))
+    try:
+        for source_path, _destination_path in copied_pairs:
+            source_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ValueError(
+            f"Copied the database to {destination_database}, but could not clean up the old database files: {exc}"
+        ) from exc
+    return len(copied_pairs)
 
 
 def create_app() -> Flask:
@@ -118,6 +205,69 @@ def create_app() -> Flask:
             )
         return redirect(url_for("dashboard"))
 
+    @app.get("/settings/storage")
+    def storage_settings_page() -> str:
+        return render_template(
+            "storage_settings.html",
+            storage_settings={
+                "database_path": str(config.database_path),
+                "clip_dir": str(config.clip_dir),
+                "upload_dir": str(config.upload_dir),
+                "settings_path": str(config.settings_path),
+            },
+        )
+
+    @app.post("/settings/storage")
+    def save_storage_settings_page() -> str:
+        try:
+            new_database_path = _resolve_ui_path(request.form.get("database_path"), kind="database file")
+            new_clip_dir = _resolve_ui_path(request.form.get("clip_dir"), kind="clip storage directory")
+            new_upload_dir = _resolve_ui_path(request.form.get("upload_dir"), kind="upload directory")
+            move_database = request.form.get("move_database") == "on"
+            move_clips = request.form.get("move_clips") == "on"
+            move_uploads = request.form.get("move_uploads") == "on"
+
+            _ensure_writable_file_parent(new_database_path, label="database file location")
+            _ensure_writable_directory(new_clip_dir, label="clip storage directory")
+            _ensure_writable_directory(new_upload_dir, label="upload directory")
+
+            old_database_path = config.database_path
+            old_clip_dir = config.clip_dir
+            old_upload_dir = config.upload_dir
+
+            moved_database_files = 0
+            moved_clip_files = 0
+            moved_upload_files = 0
+
+            if move_database:
+                moved_database_files = _copy_database_files(old_database_path, new_database_path)
+            if move_clips:
+                moved_clip_files = _copy_tree_files(old_clip_dir, new_clip_dir)
+            if move_uploads:
+                moved_upload_files = _copy_tree_files(old_upload_dir, new_upload_dir)
+
+            config.database_path = new_database_path
+            config.clip_dir = new_clip_dir
+            config.upload_dir = new_upload_dir
+            config.ensure_directories()
+            storage.initialize()
+            config.save_runtime_settings()
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("storage_settings_page"))
+        except Exception as exc:  # pragma: no cover
+            flash(f"Could not save storage settings: {exc}", "error")
+            return redirect(url_for("storage_settings_page"))
+
+        flash(
+            "Storage settings saved."
+            f" Database files moved: {moved_database_files}. "
+            f"Clip files moved: {moved_clip_files}. "
+            f"Upload files moved: {moved_upload_files}.",
+            "success",
+        )
+        return redirect(url_for("storage_settings_page"))
+
     @app.get("/nodes")
     def nodes_page() -> str:
         return render_template("nodes.html", nodes=storage.list_nodes())
@@ -179,6 +329,7 @@ def create_app() -> Flask:
                 "commit": config.app_commit,
             },
             "hub": {
+                "settings_path": str(config.settings_path),
                 "database_path": str(config.database_path),
                 "clip_dir": str(config.clip_dir),
                 "upload_dir": str(config.upload_dir),

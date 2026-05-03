@@ -22,6 +22,7 @@ Current MVP features:
   - node detail pages
   - event list
   - event detail pages with clip playback
+  - storage settings page for choosing the database file, clip directory, and upload directory
 
 Useful commands:
 
@@ -33,6 +34,16 @@ python -m bird_hub ingest-bundle /path/to/export.zip
 
 For authenticated node uploads, create a token on the hub and place it into the node's
 `BIRD_MONITOR_HUB_TOKEN` environment variable.
+
+The web UI now includes a `Storage` page where you can choose absolute filesystem paths
+for:
+
+- the SQLite database file
+- the clip storage directory
+- the upload bundle directory
+
+Those choices are persisted in `hub_settings.json` under the hub data directory and are
+applied again after restarts.
 
 Main API endpoints:
 

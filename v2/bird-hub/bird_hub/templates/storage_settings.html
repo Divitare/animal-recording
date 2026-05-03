@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}bird-hub Storage{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <p class="eyebrow">Storage Settings</p>
+    <h2>Choose where bird-hub saves its files.</h2>
+    <p class="hero-copy">
+      These settings are applied immediately and are persisted for future restarts.
+      Use absolute paths, for example an LXC mountpoint such as <code>/mnt/bird-storage</code>.
+    </p>
+  </section>
+
+  <section class="two-column-layout">
+    <article class="card">
+      <div class="section-heading">
+        <h3>Paths</h3>
+        <span class="muted">Current runtime configuration</span>
+      </div>
+      <dl class="detail-list">
+        <div>
+          <dt>Settings File</dt>
+          <dd><code>{{ storage_settings.settings_path }}</code></dd>
+        </div>
+        <div>
+          <dt>Database File</dt>
+          <dd><code>{{ storage_settings.database_path }}</code></dd>
+        </div>
+        <div>
+          <dt>Clip Directory</dt>
+          <dd><code>{{ storage_settings.clip_dir }}</code></dd>
+        </div>
+        <div>
+          <dt>Upload Directory</dt>
+          <dd><code>{{ storage_settings.upload_dir }}</code></dd>
+        </div>
+      </dl>
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <h3>Update Storage</h3>
+        <span class="muted">Absolute filesystem paths only</span>
+      </div>
+      <form class="settings-form" action="{{ url_for('save_storage_settings_page') }}" method="post">
+        <label>
+          <span>Database File</span>
+          <input type="text" name="database_path" value="{{ storage_settings.database_path }}" required>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="move_database" checked>
+          <span>Copy the current SQLite database into the new database file path.</span>
+        </label>
+
+        <label>
+          <span>Clip Directory</span>
+          <input type="text" name="clip_dir" value="{{ storage_settings.clip_dir }}" required>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="move_clips" checked>
+          <span>Move existing saved clip files into the new clip directory.</span>
+        </label>
+
+        <label>
+          <span>Upload Directory</span>
+          <input type="text" name="upload_dir" value="{{ storage_settings.upload_dir }}" required>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="move_uploads" checked>
+          <span>Move any currently saved upload bundle files into the new upload directory.</span>
+        </label>
+
+        <button type="submit">Save Storage Settings</button>
+      </form>
+    </article>
+  </section>
+{% endblock %}

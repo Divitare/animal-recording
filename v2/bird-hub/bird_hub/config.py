@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,22 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _load_runtime_settings(settings_path: Path) -> dict[str, str]:
+    if not settings_path.exists():
+        return {}
+    try:
+        payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(key): str(value).strip()
+        for key, value in payload.items()
+        if isinstance(key, str) and isinstance(value, str) and str(value).strip()
+    }
+
+
 @dataclass(slots=True)
 class BirdHubConfig:
     app_root: Path
@@ -45,6 +62,7 @@ class BirdHubConfig:
     secret_key: str
     data_dir: Path
     log_dir: Path
+    settings_path: Path
     database_path: Path
     clip_dir: Path
     upload_dir: Path
@@ -61,9 +79,11 @@ class BirdHubConfig:
         app_root = Path(__file__).resolve().parents[1]
         data_dir = Path(os.getenv("BIRD_MONITOR_DATA_DIR", app_root / "data")).resolve()
         log_dir = Path(os.getenv("BIRD_MONITOR_LOG_DIR", data_dir / "logs")).resolve()
-        database_path = data_dir / "bird_hub.db"
-        clip_dir = data_dir / "clips"
-        upload_dir = data_dir / "uploads"
+        settings_path = (data_dir / "hub_settings.json").resolve()
+        runtime_settings = _load_runtime_settings(settings_path)
+        database_path = Path(runtime_settings.get("database_path") or (data_dir / "bird_hub.db")).expanduser().resolve()
+        clip_dir = Path(runtime_settings.get("clip_dir") or (data_dir / "clips")).expanduser().resolve()
+        upload_dir = Path(runtime_settings.get("upload_dir") or (data_dir / "uploads")).expanduser().resolve()
 
         return cls(
             app_root=app_root,
@@ -72,6 +92,7 @@ class BirdHubConfig:
             secret_key=os.getenv("BIRD_MONITOR_SECRET_KEY", "bird-hub-dev-secret"),
             data_dir=data_dir,
             log_dir=log_dir,
+            settings_path=settings_path,
             database_path=database_path,
             clip_dir=clip_dir,
             upload_dir=upload_dir,
@@ -84,5 +105,23 @@ class BirdHubConfig:
         )
 
     def ensure_directories(self) -> None:
-        for path in (self.data_dir, self.log_dir, self.clip_dir, self.upload_dir):
+        for path in (
+            self.data_dir,
+            self.log_dir,
+            self.settings_path.parent,
+            self.database_path.parent,
+            self.clip_dir,
+            self.upload_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
+
+    def save_runtime_settings(self) -> None:
+        payload = {
+            "database_path": str(self.database_path),
+            "clip_dir": str(self.clip_dir),
+            "upload_dir": str(self.upload_dir),
+        }
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.settings_path.with_name(f".{self.settings_path.name}.tmp")
+        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temp_path.replace(self.settings_path)
