@@ -38,6 +38,10 @@ INITIALIZE_APP_DATABASE="false"
 SPECIES_VERIFY_MODULE=""
 STATUS_FILE=""
 SERVICE_STATUS_PATH=""
+HUB_DATABASE_PATH=""
+HUB_CLIP_DIR=""
+HUB_UPLOAD_DIR=""
+HUB_SETTINGS_PATH=""
 
 declare -a WARNING_LOG=()
 declare -a ERROR_LOG=()
@@ -441,10 +445,75 @@ ensure_directories() {
 
 repair_runtime_permissions() {
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${CURRENT_DIR}" "${DATA_DIR}" "${LOG_DIR}"
+  if [[ -n "${HUB_DATABASE_PATH}" ]]; then
+    mkdir -p "$(dirname "${HUB_DATABASE_PATH}")"
+    chown "${SERVICE_USER}:${SERVICE_USER}" "$(dirname "${HUB_DATABASE_PATH}")" || true
+    chmod 755 "$(dirname "${HUB_DATABASE_PATH}")" || true
+    if [[ -f "${HUB_DATABASE_PATH}" ]]; then
+      chown "${SERVICE_USER}:${SERVICE_USER}" "${HUB_DATABASE_PATH}" || true
+      chmod 664 "${HUB_DATABASE_PATH}" || true
+    fi
+    if [[ -f "${HUB_DATABASE_PATH}-wal" ]]; then
+      chown "${SERVICE_USER}:${SERVICE_USER}" "${HUB_DATABASE_PATH}-wal" || true
+      chmod 664 "${HUB_DATABASE_PATH}-wal" || true
+    fi
+    if [[ -f "${HUB_DATABASE_PATH}-shm" ]]; then
+      chown "${SERVICE_USER}:${SERVICE_USER}" "${HUB_DATABASE_PATH}-shm" || true
+      chmod 664 "${HUB_DATABASE_PATH}-shm" || true
+    fi
+  fi
+  if [[ -n "${HUB_CLIP_DIR}" ]]; then
+    mkdir -p "${HUB_CLIP_DIR}"
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${HUB_CLIP_DIR}"
+    chmod 755 "${HUB_CLIP_DIR}" || true
+  fi
+  if [[ -n "${HUB_UPLOAD_DIR}" ]]; then
+    mkdir -p "${HUB_UPLOAD_DIR}"
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${HUB_UPLOAD_DIR}"
+    chmod 755 "${HUB_UPLOAD_DIR}" || true
+  fi
+  if [[ -n "${HUB_SETTINGS_PATH}" ]]; then
+    mkdir -p "$(dirname "${HUB_SETTINGS_PATH}")"
+    chown "${SERVICE_USER}:${SERVICE_USER}" "$(dirname "${HUB_SETTINGS_PATH}")" || true
+    chmod 755 "$(dirname "${HUB_SETTINGS_PATH}")" || true
+    if [[ -f "${HUB_SETTINGS_PATH}" ]]; then
+      chown "${SERVICE_USER}:${SERVICE_USER}" "${HUB_SETTINGS_PATH}" || true
+      chmod 664 "${HUB_SETTINGS_PATH}" || true
+    fi
+  fi
   find "${DATA_DIR}" -type d -exec chmod 755 {} +
   find "${LOG_DIR}" -type d -exec chmod 755 {} +
   find "${DATA_DIR}" -type f -exec chmod 664 {} +
   find "${LOG_DIR}" -type f -exec chmod 664 {} +
+}
+
+resolve_hub_runtime_paths() {
+  local resolved_output=""
+  if [[ "${INSTALL_VARIANT}" != "v2-bird-hub" ]]; then
+    return
+  fi
+
+  resolved_output="$(
+    cd "${CURRENT_DIR}" && \
+    BIRD_MONITOR_ENV_FILE="${ENV_FILE}" \
+    PYTHONPATH="${CURRENT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" - <<'PY'
+from bird_hub.config import BirdHubConfig
+
+config = BirdHubConfig.from_env()
+print(f"database_path={config.database_path}")
+print(f"clip_dir={config.clip_dir}")
+print(f"upload_dir={config.upload_dir}")
+print(f"settings_path={config.settings_path}")
+PY
+  )"
+
+  HUB_DATABASE_PATH="$(printf '%s\n' "${resolved_output}" | awk -F= '/^database_path=/{print substr($0, index($0, "=")+1)}' | tail -n1)"
+  HUB_CLIP_DIR="$(printf '%s\n' "${resolved_output}" | awk -F= '/^clip_dir=/{print substr($0, index($0, "=")+1)}' | tail -n1)"
+  HUB_UPLOAD_DIR="$(printf '%s\n' "${resolved_output}" | awk -F= '/^upload_dir=/{print substr($0, index($0, "=")+1)}' | tail -n1)"
+  HUB_SETTINGS_PATH="$(printf '%s\n' "${resolved_output}" | awk -F= '/^settings_path=/{print substr($0, index($0, "=")+1)}' | tail -n1)"
+
+  log "Resolved bird-hub runtime paths: database=${HUB_DATABASE_PATH:-unknown} clip_dir=${HUB_CLIP_DIR:-unknown} upload_dir=${HUB_UPLOAD_DIR:-unknown}"
 }
 
 generate_secret() {
@@ -1064,6 +1133,10 @@ perform_install_or_update() {
   prepare_source_checkout
   sync_source
   cleanup_source_checkout
+  if [[ "${INSTALL_VARIANT}" == "v2-bird-hub" ]]; then
+    set_stage "Resolving bird-hub runtime paths"
+    resolve_hub_runtime_paths
+  fi
   ensure_virtualenv
   sync_python_dependencies
   set_stage "Repairing runtime permissions"
