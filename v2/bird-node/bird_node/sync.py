@@ -227,6 +227,9 @@ class BirdNodeSyncManager:
         headers: dict[str, str] = {}
         if self.config.hub_token:
             headers["Authorization"] = f"Bearer {self.config.hub_token}"
+        if self.config.cloudflare_access_client_id and self.config.cloudflare_access_client_secret:
+            headers["CF-Access-Client-Id"] = self.config.cloudflare_access_client_id
+            headers["CF-Access-Client-Secret"] = self.config.cloudflare_access_client_secret
 
         try:
             with batch_path.open("rb") as handle:

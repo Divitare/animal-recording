@@ -48,7 +48,18 @@ Main sync environment variables:
 
 - `BIRD_MONITOR_HUB_URL`
 - `BIRD_MONITOR_HUB_TOKEN`
+- `BIRD_MONITOR_CLOUDFLARE_ACCESS_CLIENT_ID`
+- `BIRD_MONITOR_CLOUDFLARE_ACCESS_CLIENT_SECRET`
 - `BIRD_MONITOR_SYNC_INTERVAL_SECONDS`
 - `BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS`
 - `BIRD_MONITOR_SYNC_MAX_EVENTS_PER_BUNDLE`
 - `BIRD_MONITOR_SYNC_MAX_HEALTH_SNAPSHOTS_PER_BUNDLE`
+
+When the hub is behind Cloudflare Access, create a Cloudflare Access service token and add both generated values to `/etc/bird-node.env`:
+
+```bash
+BIRD_MONITOR_HUB_URL=https://birdnet.divitare.de
+BIRD_MONITOR_HUB_TOKEN=your-bird-hub-token
+BIRD_MONITOR_CLOUDFLARE_ACCESS_CLIENT_ID=your-cloudflare-access-client-id
+BIRD_MONITOR_CLOUDFLARE_ACCESS_CLIENT_SECRET=your-cloudflare-access-client-secret
+```

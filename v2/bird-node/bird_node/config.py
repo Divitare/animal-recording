@@ -74,6 +74,8 @@ class BirdNodeConfig:
     longitude: float | None
     hub_url: str | None
     hub_token: str | None
+    cloudflare_access_client_id: str | None
+    cloudflare_access_client_secret: str | None
     sync_interval_seconds: float
     sync_retry_base_seconds: float
     sync_max_events_per_bundle: int
@@ -143,6 +145,8 @@ def load_config() -> BirdNodeConfig:
         longitude=_env_optional_float("BIRD_MONITOR_LONGITUDE"),
         hub_url=os.getenv("BIRD_MONITOR_HUB_URL", "").strip() or None,
         hub_token=os.getenv("BIRD_MONITOR_HUB_TOKEN", "").strip() or None,
+        cloudflare_access_client_id=os.getenv("BIRD_MONITOR_CLOUDFLARE_ACCESS_CLIENT_ID", "").strip() or None,
+        cloudflare_access_client_secret=os.getenv("BIRD_MONITOR_CLOUDFLARE_ACCESS_CLIENT_SECRET", "").strip() or None,
         sync_interval_seconds=_env_float("BIRD_MONITOR_SYNC_INTERVAL_SECONDS", 1800.0),
         sync_retry_base_seconds=_env_float("BIRD_MONITOR_SYNC_RETRY_BASE_SECONDS", 300.0),
         sync_max_events_per_bundle=_env_int("BIRD_MONITOR_SYNC_MAX_EVENTS_PER_BUNDLE", 25),
